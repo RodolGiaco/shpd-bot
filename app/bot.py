@@ -37,6 +37,8 @@ MODEL = "gpt-4o-mini"
 SYSTEM_PROMPT = (
     "Actúa como un experto en biomecanica corporal especializado en propiocepción aplicada a técnicas de calistenia. \n"
     "Evalúa la propiocepción de cada lado de 0% (muy mala propiocepción) a 100% (propiocepción perfecta). \n"
+    "La imagen siempre sera sacada con la camara frontal y no sera una selfie lo cual no invierte los lados anatomicos"
+    "Unicamente inviertes los lados anatomicos si la persona esta de espalda caso contrario la derecha anatomica es la derecha de la imagen"
     "Responde SIEMPRE siguiendo estrictamente este formato no superando los 300 token:\n\n"
     "Análisis:\n"
     "- Lado derecho anatómico: [descripción breve, máximo 2 líneas]\n"
@@ -45,8 +47,15 @@ SYSTEM_PROMPT = (
     "- Lado derecho anatómico: [porcentaje]%\n"
     "- Lado izquierdo anatómico: [porcentaje]%\n\n"
     "Problema detectado:\n"
-    "- [explicación técnica breve, máximo 3 líneas]\n\n"
+    "- [explicación técnica breve en orden de prioridad de acuerdo a cintura escapular, caderas, hombros, otro problema, máximo 2 líneas]\n\n"
     "No agregues nada fuera de este esquema. Sé conciso, evita extender las descripciones más de lo indicado."
+)
+
+USER_PROMPT = (
+    "Analyze the provided image of a person performing a calisthenic technique . Perform the following tasks:\n"
+    "- Determine which side of the body is the person’s left and which is right using visual cues.\n"
+    "- Describe the calisthenic exercise being performed, focusing on anatomical and proprioceptive details.\n"
+    "- Comment on the person’s posture: note shoulder alignment, hip alignment, knee alignment, limb angles, any torso inclinations or rotations, and the person’s balance and stability.\n\n"
 )
 # --- Menús y botones ---
 MAIN_MENU = {
@@ -186,17 +195,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "awaiting_proprio_photo"
         return
 
-    # esperando lado anatómico
-    if state == "awaiting_side":
-        side = text.lower()
-        if side not in ("izquierdo", "derecho"):
-            return await update.message.reply_text("❌ Responde ‘izquierdo’ o ‘derecho’.")
-        context.user_data["side"] = side
-        context.user_data["state"] = None
-        await analyze_proprioception(update, context)
-        return await show_main_menu(update, context)
         
-
     # Flujo principal del menú
     if choice not in MAIN_MENU:
         return await update.message.reply_text(
@@ -301,10 +300,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buf = BytesIO()
     img.save(buf, format="JPEG", quality=100)
     context.user_data["b64_image"] = base64.b64encode(buf.getvalue()).decode()
-
-    # preguntar lado
-    await update.message.reply_text("¿Cuál es tu lado derecho anatómico? (izquierdo/derecho)")
-    context.user_data["state"] = "awaiting_side"
+    await update.message.reply_text("Envia una imagen tomada con la camara frontal (Selfie ❌!!))")
 
 
 async def analyze_proprioception(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -314,7 +310,7 @@ async def analyze_proprioception(update: Update, context: ContextTypes.DEFAULT_T
     user_prompt = (
             f"Analiza la imagen enviada con la tecnica {exercise} a nivel escapular y alineacion de cadera. \n"
             f"Indica qué lado anatómico tiene peor propiocepción, cuánto porcentaje de propiocepción tiene cada lado, \n"
-            f"Considera que mi lado derecho anatómico es el lado {side} de la iamgen, y explica técnicamente qué problema observas en la ejecución."
+            f"Evalua si esta de espalda la persona para detectar que lado es el correcto."
         )
     resp = client.responses.create(
         model=MODEL,
