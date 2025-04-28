@@ -51,12 +51,6 @@ SYSTEM_PROMPT = (
     "No agregues nada fuera de este esquema. Sé conciso, evita extender las descripciones más de lo indicado."
 )
 
-USER_PROMPT = (
-    "Analyze the provided image of a person performing a calisthenic technique . Perform the following tasks:\n"
-    "- Determine which side of the body is the person’s left and which is right using visual cues.\n"
-    "- Describe the calisthenic exercise being performed, focusing on anatomical and proprioceptive details.\n"
-    "- Comment on the person’s posture: note shoulder alignment, hip alignment, knee alignment, limb angles, any torso inclinations or rotations, and the person’s balance and stability.\n\n"
-)
 # --- Menús y botones ---
 MAIN_MENU = {
     "1": "Contratar servicio personalizado",
@@ -188,7 +182,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         context.user_data["exercise"] = EXERCISES[choice]
         await update.message.reply_text(
-            f"Envía una foto practicando <b>{EXERCISES[choice]}</b>.",
+            f"Envía una foto practicando <b>{EXERCISES[choice]} </b> tomada con la camara frontal (❌ Selfie!!).",
             parse_mode=ParseMode.HTML,
             reply_markup=ReplyKeyboardRemove(),
         )
@@ -300,12 +294,13 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buf = BytesIO()
     img.save(buf, format="JPEG", quality=100)
     context.user_data["b64_image"] = base64.b64encode(buf.getvalue()).decode()
-    await update.message.reply_text("Envia una imagen tomada con la camara frontal (Selfie ❌!!))")
+    await analyze_proprioception(update, context)
+    return await show_main_menu(update, context)
+    
 
 
 async def analyze_proprioception(update: Update, context: ContextTypes.DEFAULT_TYPE):
     exercise = context.user_data["exercise"]
-    side = context.user_data["side"]
     b64 = context.user_data["b64_image"]
     user_prompt = (
             f"Analiza la imagen enviada con la tecnica {exercise} a nivel escapular y alineacion de cadera. \n"
