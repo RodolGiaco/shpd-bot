@@ -55,6 +55,7 @@ ALUMNI_MENU = {
     "1": "Rutina para alumnos",
     "2": "Servicio de propiocepción"
 }
+ALUMNI_CODES = {"147258369", "369258147", "789456123"}
 ALUMNI_BUTTONS = [["1. Rutina para alumnos", "2. Servicio de propiocepción"]]
 # --- Menús y botones ---
 MAIN_MENU = {
@@ -152,6 +153,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if lower in ("hola", "hola!"):
         return await show_main_menu(update, context)
 
+    # Gestión de código de alumno
+    if state == "awaiting_alumni_code":
+        code = text
+        if code in ALUMNI_CODES:
+            context.user_data["is_alumno"] = True
+            await update.message.reply_text(
+                "👥 <b>Zona Alumnos</b>\nElige una opción:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=ReplyKeyboardMarkup(ALUMNI_BUTTONS, resize_keyboard=True, one_time_keyboard=True)
+            )
+            context.user_data["state"] = "awaiting_alumni_option"
+        else:
+            await update.message.reply_text(
+                "❌ Código no válido. Solo alumnos registrados pueden acceder. Contacta para contratar el servicio.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await show_main_menu(update, context)
+        return
+
     # Flujo submenú propiocepción
     if state == "awaiting_prop_option":
         if choice not in PROP_MENU:
@@ -162,7 +183,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ),
             )
         if choice == "1":
-            # Prueba gratuita: verificar intento y elegir técnica
             if context.user_data.get("proprio_done"):
                 await update.message.reply_text(
                     "❌ Ya usaste tu prueba gratuita.",
@@ -186,11 +206,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML,
                 reply_markup=pay_btn,
             )
-            #await update.message.reply_text("", reply_markup=ReplyKeyboardRemove())
             return await show_main_menu(update, context)
         return
 
-    # Selección de técnica tras prueba gratuita
     if state == "awaiting_exercise":
         if choice not in EXERCISES:
             return await update.message.reply_text(
@@ -208,8 +226,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "awaiting_proprio_photo"
         return
 
-        
-    # Flujo principal del menú
     if choice not in MAIN_MENU:
         return await update.message.reply_text(
             "❌ Opción no válida. Toca un botón.",
@@ -219,7 +235,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     if state == "awaiting_alumni_option":
-        # validación genérica
         if choice not in ALUMNI_MENU:
             return await update.message.reply_text(
                 "❌ Debes elegir 1 o 2.",
@@ -237,13 +252,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return 
 
         # 6.2 – Servicio de propiocepción para alumnos
-        # marcamos is_alumno y lanzamos la selección de técnica
-        # (reusa el flujo awaiting_exercise)
         if choice == "2":
             context.user_data["is_alumno"] = True
             context.user_data["state"]     = "awaiting_exercise"
-
-            # **aquí mostramos las 6 técnicas para evaluar**
             await update.message.reply_text(
                 "Perfecto, ¿qué técnica quieres evaluar?",
                 reply_markup=ReplyKeyboardMarkup(
@@ -291,7 +302,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_main_menu(update, context)
 
     if choice == "4":
-        # Enviar el mensaje descriptivo
         await update.message.reply_text(
             "<b>🏋️‍♂️ ¿Quiénes somos?</b>\n\n"
             "✨ Nexus es el punto de conexión entre <b>el cuerpo y la mente</b>, donde el movimiento se vuelve consciente y el entrenamiento, una experiencia de autoconocimiento.\n\n"
@@ -301,7 +311,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=ReplyKeyboardRemove(),
         )
-           # Enviar el logo o imagen
         with open("nexus/logo-blanco.webp", "rb") as logo:
             await update.message.reply_sticker(sticker=logo)
         return await show_main_menu(update, context)
@@ -316,21 +325,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     if choice == "6":
-        await update.message.reply_text(
-            "👥 <b>Zona Alumnos</b>\nElige una opción:",
-             parse_mode=ParseMode.HTML,
-            reply_markup=ReplyKeyboardMarkup(
-                ALUMNI_BUTTONS,
-                resize_keyboard=True,
-                one_time_keyboard=True
+        if context.user_data.get("is_alumno"):
+            # ya es alumno → muestro directamente el submenú
+            await update.message.reply_text(
+                "👥 <b>Zona Alumnos</b>\nElige una opción:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=ReplyKeyboardMarkup(ALUMNI_BUTTONS, resize_keyboard=True, one_time_keyboard=True)
             )
-        )
-        context.user_data["state"] = "awaiting_alumni_option"
-        return
+            context.user_data["state"] = "awaiting_alumni_option"
+        else:
+            # primer acceso → pido código
+            await update.message.reply_text(
+                "🔑 Ingresa tu código de alumno:",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data["state"] = "awaiting_alumni_code"
+            return
 
-
-    # opción 6 o retorno
-    return await show_main_menu(update, context)
+    
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("state") != "awaiting_proprio_photo":
@@ -395,7 +407,7 @@ async def analyze_proprioception(update: Update, context: ContextTypes.DEFAULT_T
     # --- 2) Llamada a la API ---
     resp = client.responses.create(
         model=MODEL,
-        #user=str(update.effective_user.id),
+        user=str(update.effective_user.id),
         input=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": [
@@ -457,7 +469,7 @@ async def free_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML
     )
     # vuelve al menú principal tras unos segundos
-    await show_main_menu(update, context)
+    return await show_main_menu(update, context)
 
 async def paid_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Acknowledge the callback to remove the “loading” state
@@ -480,6 +492,9 @@ def format_proprioception_response(raw: str) -> str:
     Convierte la respuesta cruda de OpenAI en un mensaje
     con emojis, negritas y viñetas para Telegram.
     """
+    if raw.startswith("🚫 Imagen no válida"):
+        return raw
+    
     lines = raw.splitlines()
     sections = {"Análisis": [], "Propiocepción": [], "Problema detectado": []}
     current = None
