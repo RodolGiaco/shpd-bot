@@ -36,6 +36,7 @@ MODEL = "gpt-4o-mini"
 
 SYSTEM_PROMPT = (
     "Actúa como un experto en biomecanica corporal especializado en propiocepción aplicada a técnicas de calistenia. \n"
+    "Evalua cada nueva imagen como si fuera una nueva no tengas en cuenta la anterior a menos que se este preguntando la misma"
     "Evalúa la propiocepción de cada lado de 0% (muy mala propiocepción) a 100% (propiocepción perfecta). \n"
     "La imagen siempre sera sacada con la camara frontal y no sera una selfie lo cual no invierte los lados anatomicos"
     "Unicamente inviertes los lados anatomicos si la persona esta de espalda caso contrario la derecha anatomica es la derecha de la imagen"
@@ -50,7 +51,11 @@ SYSTEM_PROMPT = (
     "- [explicación técnica breve en orden de prioridad de acuerdo a cintura escapular, caderas, hombros, otro problema, máximo 2 líneas]\n\n"
     "No agregues nada fuera de este esquema. Sé conciso, evita extender las descripciones más de lo indicado."
 )
-
+ALUMNI_MENU = {
+    "1": "Rutina para alumnos",
+    "2": "Servicio de propiocepción"
+}
+ALUMNI_BUTTONS = [["1. Rutina para alumnos", "2. Servicio de propiocepción"]]
 # --- Menús y botones ---
 MAIN_MENU = {
     "1": "Contratar servicio personalizado",
@@ -63,7 +68,7 @@ MAIN_MENU = {
 MENU_BUTTONS = [
     ["1. 📋 Contratar servicio personalizado", "2. 🤸‍♂️ Contratar servicio de propiocepción"],
     ["3. ❓ ¿Qué es la propiocepción?",       "4. ℹ️ ¿Quiénes somos?"],
-    ["5. 🏋️ Quiero mi Rutina!",                "6. 🔄 Volver al menú"],
+    ["5. 🏋️ Quiero mi Rutina!",                "6. 🔄 Alumnos"],
 ]
 PROP_MENU = {
     "1": "Prueba gratuita",
@@ -96,31 +101,45 @@ def extract_choice(text: str) -> str:
     return text.split(".")[0] if "." in text else text
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Uso de context.chat_data para contar menús mostrados por chat
+    # 1) Guarda TODO lo que quieras preservar
+    saved = {
+        "attempts_proprio": context.user_data.get("attempts_proprio"),
+        "proprio_done":     context.user_data.get("proprio_done"),
+        "count_proprio":    context.user_data.get("count_proprio"),
+        "last_date":        context.user_data.get("last_date"),
+        "is_alumno":        context.user_data.get("is_alumno"),
+    }
+
+    # 2) Limpia solo el estado transitorio
+    context.user_data.clear()
+
+    # 3) Restaura únicamente lo guardado
+    for key, val in saved.items():
+        if val is not None:
+            context.user_data[key] = val
+
+    # 4) Cuenta cuántas veces se ha mostrado este menú en el chat
     count = context.chat_data.get("menu_count", 0) + 1
     context.chat_data["menu_count"] = count
     logging.info(f"Menú principal mostrado {count} veces en chat {update.effective_chat.id}")
 
-    # Preservar datos de propiocepción (user_data)
-    attempts = context.user_data.get("attempts_proprio")
-    done = context.user_data.get("proprio_done")
-    context.user_data.clear()
-    if attempts:
-        context.user_data["attempts_proprio"] = attempts
-    if done:
-        context.user_data["proprio_done"] = done
-
-    # Mostrar menú
+    # 5) Envía el menú interactivo
     await update.message.reply_text(
         "👋 <b>Bienvenido a Nexus</b>\nElige una opción:",
         parse_mode=ParseMode.HTML,
         reply_markup=ReplyKeyboardMarkup(
-            MENU_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+            MENU_BUTTONS,
+            resize_keyboard=True,
+            one_time_keyboard=True
         ),
     )
+
+    # 6) Asegúrate de reiniciar el estado de flujo
     context.user_data["state"] = None
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("is_alumno", None)
     await show_main_menu(update, context)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -198,19 +217,50 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 MENU_BUTTONS, resize_keyboard=True, one_time_keyboard=True
             ),
         )
+        
+    if state == "awaiting_alumni_option":
+        # validación genérica
+        if choice not in ALUMNI_MENU:
+            return await update.message.reply_text(
+                "❌ Debes elegir 1 o 2.",
+                reply_markup=ReplyKeyboardMarkup(
+                    ALUMNI_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                )
+            )
+        # 6.1 – Rutina para alumnos
+        if choice == "1":
+            await update.message.reply_text(
+                "<b>Rutina 🆓</b>\n…",
+                parse_mode=ParseMode.HTML,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return 
 
-    # Opciones principales
-    if choice == "2":
-        # iniciar propiocepción (un intento)
+        # 6.2 – Servicio de propiocepción para alumnos
+        # marcamos is_alumno y lanzamos la selección de técnica
+        # (reusa el flujo awaiting_exercise)
+        if choice == "2":
+            context.user_data["is_alumno"] = True
+            context.user_data["state"]     = "awaiting_exercise"
+
+            # **aquí mostramos las 6 técnicas para evaluar**
+            await update.message.reply_text(
+                "Perfecto, ¿qué técnica quieres evaluar?",
+                reply_markup=ReplyKeyboardMarkup(
+                    EX_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                ),
+            )
+            return
+
+    elif choice == "2":
+        # Contratar propiocepción normal (no alumno)
         await update.message.reply_text(
             "Contratar propiocepción:",
-            reply_markup=ReplyKeyboardMarkup(
-                PROP_BUTTONS, resize_keyboard=True, one_time_keyboard=True
-            ),
+            reply_markup=ReplyKeyboardMarkup(PROP_BUTTONS, resize_keyboard=True, one_time_keyboard=True),
         )
         context.user_data["state"] = "awaiting_prop_option"
         return
-
+    
     key = f"attempts_{choice}"
     if context.user_data.get(key):
         return await update.message.reply_text("❌ Solo un intento por acción.")
@@ -241,10 +291,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_main_menu(update, context)
 
     if choice == "4":
-        # Enviar el logo o imagen
-        with open("nexus/logo-blanco.webp", "rb") as logo:
-            await update.message.reply_sticker(sticker=logo)
-
         # Enviar el mensaje descriptivo
         await update.message.reply_text(
             "<b>🏋️‍♂️ ¿Quiénes somos?</b>\n\n"
@@ -255,6 +301,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=ReplyKeyboardRemove(),
         )
+           # Enviar el logo o imagen
+        with open("nexus/logo-blanco.webp", "rb") as logo:
+            await update.message.reply_sticker(sticker=logo)
         return await show_main_menu(update, context)
 
     elif choice == "5":
@@ -265,15 +314,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(ROUTINE_MENU)
         )
         return
-    
+        
+    if choice == "6":
+        await update.message.reply_text(
+            "👥 <b>Zona Alumnos</b>\nElige una opción:",
+             parse_mode=ParseMode.HTML,
+            reply_markup=ReplyKeyboardMarkup(
+                ALUMNI_BUTTONS,
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
+        )
+        context.user_data["state"] = "awaiting_alumni_option"
+        return
 
 
     # opción 6 o retorno
     return await show_main_menu(update, context)
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("proprio_done"):
-        return await update.message.reply_text("Ya realizamos el análisis.")
     if context.user_data.get("state") != "awaiting_proprio_photo":
         return await update.message.reply_text("Primero elige Prueba gratuita y técnica.")
 
@@ -294,22 +353,49 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buf = BytesIO()
     img.save(buf, format="JPEG", quality=100)
     context.user_data["b64_image"] = base64.b64encode(buf.getvalue()).decode()
+    context.user_data["attempts"] = 1
     await analyze_proprioception(update, context)
     return await show_main_menu(update, context)
     
 
 
+from datetime import date
+
 async def analyze_proprioception(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # --- 0) Control de límite diario ---
+    today = date.today().isoformat()
+    # Si es un nuevo día, resetea
+    if context.user_data.get("last_date") != today:
+        context.user_data["last_date"] = today
+        context.user_data["count_proprio"] = 0
+    if context.user_data.get("is_alumno"):
+        max_daily = 5
+    else:
+        max_daily = 1
+    used = context.user_data.get("count_proprio", 0)
+    if used >= max_daily:
+        # Ya alcanzó su tope diario
+        await update.message.reply_text(
+            "🚫 Has alcanzado el límite de 5 análisis de propiocepción por día. "
+            "Vuelve mañana para más.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        context.user_data["proprio_done"] = True
+        return await show_main_menu(update, context)
+
+    # --- 1) Recuperar datos para el análisis ---
     exercise = context.user_data["exercise"]
     b64 = context.user_data["b64_image"]
     user_prompt = (
-            f"Analiza la imagen enviada con la tecnica {exercise} a nivel escapular y alineacion de cadera. \n"
-            f"Indica qué lado anatómico tiene peor propiocepción, cuánto porcentaje de propiocepción tiene cada lado, \n"
-            f"Evalua si esta de espalda la persona para detectar que lado es el correcto."
-        )
+        f"Analiza la imagen enviada con la técnica {exercise} a nivel escapular y alineación de cadera.\n"
+        f"Indica qué lado anatómico tiene peor propiocepción, cuánto porcentaje de propiocepción tiene cada lado,\n"
+        f"Evalúa si está de espalda o de frente para detectar correctamente los lados."
+    )
+
+    # --- 2) Llamada a la API ---
     resp = client.responses.create(
         model=MODEL,
-        user=str(update.effective_user.id),
+        #user=str(update.effective_user.id),
         input=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": [
@@ -320,21 +406,19 @@ async def analyze_proprioception(update: Update, context: ContextTypes.DEFAULT_T
         max_output_tokens=200,
         temperature=0.0
     )
-    # 1. Obtén la cadena cruda
+
+    # --- 3) Formatear y enviar la respuesta ---
     raw = resp.output_text
-
-    # 2. Dale formato amigable
     formatted = format_proprioception_response(raw)
-
-    # 3. Muestra al usuario con HTML y limpia el teclado
     await update.message.reply_text(
         formatted,
         parse_mode=ParseMode.HTML,
         reply_markup=ReplyKeyboardRemove()
     )
-    context.user_data["proprio_done"] = True
-    #await update.message.reply_text("", reply_markup=ReplyKeyboardRemove())
-    #await show_main_menu(update, context)
+
+    # --- 4) Aumentar el contador y marcar como hecho ---
+    context.user_data["count_proprio"] = used + 1
+    context.user_data["proprio_done"]  = True
 
 
 async def free_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
