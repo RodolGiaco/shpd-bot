@@ -9,5 +9,5 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app
-ENV RESIZE_IMAGES=false
+ENV RESIZE_IMAGES=true
 CMD ["python", "app/bot.py"]

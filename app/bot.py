@@ -1,6 +1,7 @@
 import os
 import logging
 import base64
+import json
 from io import BytesIO
 from PIL import Image
 from openai import OpenAI
@@ -25,6 +26,103 @@ from telegram.ext import CallbackQueryHandler
 # --- Configuración logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+import json
+
+FEW_SHOT_MESSAGES = [
+    {
+        "role": "user",
+        "content": [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,AAAA…",
+                    "detail": "auto"
+                }
+            },
+            {
+                "type": "text",
+                "text": "Analyze the full_planche technique at proprioceptive level"
+            }
+        ]
+    },
+    {
+        "role": "assistant",
+        "content": json.dumps({
+            "technique": "full_planche",
+            "progression": "tuck",
+            "sides": {
+                "left": {
+                    "back": "straight",
+                    "scapulae": "retracted",
+                    "shoulders": "aligned",
+                    "hips": "level",
+                    "activation": 72.5
+                },
+                "right": {
+                    "back": "curved",
+                    "scapulae": "elevated",
+                    "shoulders": "rounded_forward",
+                    "hips": "tilted",
+                    "activation": 58.3
+                }
+            },
+            "overallActivation": 65.4,
+            "worstSide": "right",
+            "asymmetry": 14.2,
+            "confidence": 0.91,
+            "wrongImageRequest": False
+        })
+    },
+    {
+        "role": "user",
+        "content": [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,BBBB…",
+                    "detail": "auto"
+                }
+            },
+            {
+                "type": "text",
+                "text": "Analyze the full_planche technique at proprioceptive level"
+            }
+        ]
+    },
+    {
+        "role": "assistant",
+        "content": json.dumps({
+            "technique": "",
+            "progression": "",
+            "sides": {
+                "left": {
+                    "neck": "",
+                    "back": "",
+                    "scapulae": "",
+                    "shoulders": "",
+                    "hips": "",
+                    "chin": "",
+                    "activation": None
+                },
+                "right": {
+                    "neck": "",
+                    "back": "",
+                    "scapulae": "",
+                    "shoulders": "",
+                    "hips": "",
+                    "chin": "",
+                    "activation": None
+                }
+            },
+            "overallActivation": None,
+            "worstSide": "",
+            "asymmetry": None,
+            "confidence": None,
+            "wrongImageRequest": True
+        })
+    }
+]
+
 
 RESIZE_IMAGES = os.getenv("RESIZE_IMAGES", "false").lower() in ("1", "true", "yes")
 MAX_IMAGE_WIDTH = int(os.getenv("MAX_IMAGE_WIDTH", "512"))
@@ -34,23 +132,16 @@ API_KEY = os.getenv("OPENAI_API_KEY", "sk-proj-hHDY-CpjhH9hO3jvLOeXVqc12oqajV_BF
 client = OpenAI(api_key=API_KEY)
 MODEL = "gpt-4o-mini"
 
-SYSTEM_PROMPT = (
-    "Actúa como un experto en biomecanica corporal especializado en propiocepción aplicada a técnicas de calistenia. \n"
-    "Evalua cada nueva imagen como si fuera una nueva no tengas en cuenta la anterior a menos que se este preguntando la misma"
-    "Evalúa la propiocepción de cada lado de 0% (muy mala propiocepción) a 100% (propiocepción perfecta). \n"
-    "La imagen siempre sera sacada con la camara frontal y no sera una selfie lo cual no invierte los lados anatomicos"
-    "Unicamente inviertes los lados anatomicos si la persona esta de espalda caso contrario la derecha anatomica es la derecha de la imagen"
-    "Responde SIEMPRE siguiendo estrictamente este formato no superando los 300 token:\n\n"
-    "Análisis:\n"
-    "- Lado derecho anatómico: [descripción breve, máximo 2 líneas]\n"
-    "- Lado izquierdo anatómico: [descripción breve, máximo 2 líneas]\n\n"
-    "Propiocepción:\n"
-    "- Lado derecho anatómico: [porcentaje]%\n"
-    "- Lado izquierdo anatómico: [porcentaje]%\n\n"
-    "Problema detectado:\n"
-    "- [explicación técnica breve en orden de prioridad de acuerdo a cintura escapular, caderas, hombros, otro problema, máximo 2 líneas]\n\n"
-    "No agregues nada fuera de este esquema. Sé conciso, evita extender las descripciones más de lo indicado."
-)
+SYSTEM_PROMPT = """
+You are a computer-vision assistant specialised in analysing calisthenics technique.
+Describe only what you see in the image; do not give medical advice or health
+recommendations. Never identify the person or infer personal traits (age, weight,
+fitness, etc.). If the content is NSFW or otherwise disallowed, refuse.
+
+For each image you must return EXACTLY ONE JSON object with the keys shown in the
+few-shot examples (technique, progression, activation, …, wrongImageRequest).
+Return nothing else.
+"""
 ALUMNI_MENU = {
     "1": "Rutina para alumnos",
     "2": "Servicio de propiocepción"
@@ -363,7 +454,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.info("Redimensionamiento desactivado, usando tamaño original")
 
     buf = BytesIO()
-    img.save(buf, format="JPEG", quality=100)
+    img.save(buf, format="JPEG", quality=85)
     context.user_data["b64_image"] = base64.b64encode(buf.getvalue()).decode()
     context.user_data["attempts"] = 1
     await analyze_proprioception(update, context)
@@ -398,30 +489,49 @@ async def analyze_proprioception(update: Update, context: ContextTypes.DEFAULT_T
     # --- 1) Recuperar datos para el análisis ---
     exercise = context.user_data["exercise"]
     b64 = context.user_data["b64_image"]
-    user_prompt = (
-        f"Analiza la imagen enviada con la técnica {exercise} a nivel escapular y alineación de cadera.\n"
-        f"Indica qué lado anatómico tiene peor propiocepción, cuánto porcentaje de propiocepción tiene cada lado,\n"
-        f"Evalúa si está de espalda o de frente para detectar correctamente los lados."
-    )
+    # user_prompt = (
+    #     f"Exercise requested by the student:{exercise}.\n\nPlease analyze the image"
+    # )
 
     # --- 2) Llamada a la API ---
-    resp = client.responses.create(
-        model=MODEL,
-        user=str(update.effective_user.id),
-        input=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": [
-                {"type": "input_text",  "text": user_prompt},
-                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
-            ]}
-        ],
-        max_output_tokens=200,
-        temperature=0.0
+    # resp = client.responses.create(
+    #     model=MODEL,
+    #     user=str(update.effective_user.id),
+    #     input=[
+    #         {"role": "system", "content": SYSTEM_PROMPT},
+    #         {"role": "user",   "content": [
+    #             {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
+    #             {"type": "input_text",  "text": user_prompt}
+                
+    #         ]}
+    #     ],
+    #     max_output_tokens=200,
+    #     temperature=0.0
+    # )
+    
+    try:
+        response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=build_messages(b64, exercise),
+        temperature=0,
+        max_tokens=500
     )
+    except client.InternalServerError as e:
+        logging.error("OpenAI 500: %s", e)
+        await update.message.reply_text(
+            "⚠️ Hubo un problema en el servidor de OpenAI. Intentaré de nuevo en unos segundos."
+        )
+        return
 
-    # --- 3) Formatear y enviar la respuesta ---
-    raw = resp.output_text
-    formatted = format_proprioception_response(raw)
+
+    try:
+        raw = json.loads(response.choices[0].message.content)
+    except json.JSONDecodeError as e:
+        logging.error("JSON invalid: %s", e)
+        await update.message.reply_text("⚠️ No pude interpretar la respuesta, inténtalo de nuevo.")
+        return
+    
+    formatted = format_analysis_for_telegram(raw)
     await update.message.reply_text(
         formatted,
         parse_mode=ParseMode.HTML,
@@ -487,43 +597,87 @@ async def paid_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
         reply_markup=pay_btn
     )
-def format_proprioception_response(raw: str) -> str:
+def format_analysis_for_telegram(analysis: dict) -> str:
     """
-    Convierte la respuesta cruda de OpenAI en un mensaje
-    con emojis, negritas y viñetas para Telegram.
+    Recibe el dict con la nueva estructura y devuelve un string detallado
+    para enviar por Telegram (parse_mode=HTML).
     """
-    if raw.startswith("🚫 Imagen no válida"):
-        return raw
+    # 0) Validar imagen equivocada
+    if analysis.get("wrongImageRequest", False):
+        return (
+            "❌ <b>Imagen no válida</b>\n"
+            "La foto no corresponde a la técnica solicitada. "
+            "Por favor envía una imagen de la técnica correcta."
+        )
+
+    # 1) Datos generales
+    tech = analysis.get("technique", "").replace("_", " ").title()
+    prog = analysis.get("progression", "").replace("_", " ").title()
+    overall = analysis.get("overallActivation", 0.0)
+    asym    = analysis.get("asymmetry", 0.0)
+    conf    = analysis.get("confidence", 0.0) * 100  # convertir a %
+    worst   = analysis.get("worstSide", "left")
+
+    left  = analysis["sides"]["left"]
+    right = analysis["sides"]["right"]
+
+    # 2) Construir sección por lado
+    def side_block(name: str, data: dict) -> str:
+        return (
+            f"🔹 <b>{name}</b>\n"
+            f"• Espalda: {data.get('back','N/A').replace('_',' ')}\n"
+            f"• Escápula: {data.get('scapulae','N/A').replace('_',' ')}\n"
+            f"• Hombros: {data.get('shoulders','N/A').replace('_',' ')}\n"
+            f"• Caderas: {data.get('hips','N/A').replace('_',' ')}\n"
+            f"• Activación: <b>{data.get('activation',0.0):.1f}%</b>\n\n"
+        )
+
+    left_name  = "LADO IZQUIERDO"
+    right_name = "LADO DERECHO"
+
+    # 3) Mensaje completo
+    msg = (
+        f"📸 <b>Análisis de {tech} – {prog}</b>\n\n"
+        f"{side_block(left_name, left)}"
+        f"{side_block(right_name, right)}"
+        f"🤸‍♂️ <b>Propiocepción global:</b> {overall:.1f}%\n"
+        f"🔻 <b>Lado más débil:</b> {'izquierdo' if worst=='left' else 'derecho'}\n"
+        f"⚖️ <b>Asimetría:</b> {asym:.1f}%\n"
+        f"🔒 <b>Confianza del modelo:</b> {conf:.1f}%"
+    )
+    return msg
+
+
+
+def build_messages(b64: str, exercise: str):
+    user_prompt = f"""
+    Exercise requested by the student: {exercise}.
+
+    Analyse the image and report, for both left and right sides, whether each joint is
+    stable, as well as proprioception percentages.  Focus on the observable position of:
     
-    lines = raw.splitlines()
-    sections = {"Análisis": [], "Propiocepción": [], "Problema detectado": []}
-    current = None
+    • back: lordosis:+|–; cyphosis:+|–; neutral; sway_back; flat_back; scoliosis:mild|moderate  
+    • scapulae: protraction/retraction/elevation/depression:mild|moderate|excessive; rotation:superior|inferior; winging:medial|lateral  
+    • shoulders: abduction/adduction; rotation:internal|external; elevation/depression; hyper_elevated; dropped; anterior_protrusion  
+    • hips: anteversion/posterior_tilt; lateral_tilt:left|right; rotation:internal|external; abduction/adduction; iliac_crest_elev  
 
-    for line in lines:
-        if line.startswith("Análisis"):
-            current = "Análisis";  continue
-        if line.startswith("Propiocepción"):
-            current = "Propiocepción";  continue
-        if line.startswith("Problema detectado"):
-            current = "Problema detectado";  continue
-        if current and line.strip().startswith("-"):
-            sections[current].append(line.lstrip("- ").strip())
+    Then compute overallActivation%, asymmetry%, worstSide, confidence.
+    If the posture does not match the declared exercise, set "wrongImageRequest": true
+    and leave the remaining fields null or default.
 
-    parts = []
-    if sections["Análisis"]:
-        parts.append("🔎 <b>Análisis</b>")
-        parts += [f"• {item}" for item in sections["Análisis"]]
-    if sections["Propiocepción"]:
-        parts.append("\n🧠 <b>Propiocepción</b>")
-        parts += [f"• {item}" for item in sections["Propiocepción"]]
-    if sections["Problema detectado"]:
-        parts.append("\n⚠️ <b>Problema Detectado</b>")
-        parts += [f"• {item}" for item in sections["Problema detectado"]]
-
-    parts.append("\nSi tienes dudas, ¡escríbeme! 😊")
-    return "\n".join(parts)
-
-
+    Respond ONLY with the JSON object — no commentary, no medical advice.
+    """
+    user_content = [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "details": "auto"}},
+                {"type": "text",  "text": user_prompt}
+                
+    ]
+    return (
+        [{"role": "system", "content": SYSTEM_PROMPT}]
+        + [{"role": "user", "content": user_content}]
+    )
+    
+    
 if __name__ == "__main__":
     app = ApplicationBuilder()\
         .token(os.getenv("TELEGRAM_TOKEN", "7600712992:AAGKYF0lCw7h7B-ROthuOKlb90QZM20MZis"))\
