@@ -1,10 +1,7 @@
 import os
 import logging
-import base64
-import json
-from io import BytesIO
-from PIL import Image
-from openai import OpenAI
+import time
+from datetime import datetime
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -20,204 +17,125 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackQueryHandler
+
+# Importar modelos y configuración de base de datos
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.ext.declarative import declarative_base
+
+# Configuración de base de datos
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://user:password@localhost:5432/shpd_db"
+)
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Modelos
+class Paciente(Base):
+    __tablename__ = "pacientes"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String)
+    edad = Column(Integer)
+    diagnostico = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class Sesion(Base):
+    __tablename__ = "sesiones"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    paciente_id = Column(Integer, ForeignKey("pacientes.id"))
+    intervalo_segundos = Column(Integer)
+    modo = Column(String)
+    tiempo_transcurrido = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class MetricaPostural(Base):
+    __tablename__ = "metricas_posturales"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    sesion_id = Column(Integer, ForeignKey("sesiones.id"))
+    porcentaje_correcta = Column(Float)
+    porcentaje_incorrecta = Column(Float)
+    tiempo_sentado = Column(Float)
+    tiempo_parado = Column(Float)
+    alertas_enviadas = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 # --- Configuración logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-import json
-
-FEW_SHOT_MESSAGES = [
-    {
-        "role": "user",
-        "content": [
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": "data:image/png;base64,AAAA…",
-                    "detail": "auto"
-                }
-            },
-            {
-                "type": "text",
-                "text": "Analyze the full_planche technique at proprioceptive level"
-            }
-        ]
-    },
-    {
-        "role": "assistant",
-        "content": json.dumps({
-            "technique": "full_planche",
-            "progression": "tuck",
-            "sides": {
-                "left": {
-                    "back": "straight",
-                    "scapulae": "retracted",
-                    "shoulders": "aligned",
-                    "hips": "level",
-                    "activation": 72.5
-                },
-                "right": {
-                    "back": "curved",
-                    "scapulae": "elevated",
-                    "shoulders": "rounded_forward",
-                    "hips": "tilted",
-                    "activation": 58.3
-                }
-            },
-            "overallActivation": 65.4,
-            "worstSide": "right",
-            "asymmetry": 14.2,
-            "confidence": 0.91,
-            "wrongImageRequest": False
-        })
-    },
-    {
-        "role": "user",
-        "content": [
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": "data:image/png;base64,BBBB…",
-                    "detail": "auto"
-                }
-            },
-            {
-                "type": "text",
-                "text": "Analyze the full_planche technique at proprioceptive level"
-            }
-        ]
-    },
-    {
-        "role": "assistant",
-        "content": json.dumps({
-            "technique": "",
-            "progression": "",
-            "sides": {
-                "left": {
-                    "neck": "",
-                    "back": "",
-                    "scapulae": "",
-                    "shoulders": "",
-                    "hips": "",
-                    "chin": "",
-                    "activation": None
-                },
-                "right": {
-                    "neck": "",
-                    "back": "",
-                    "scapulae": "",
-                    "shoulders": "",
-                    "hips": "",
-                    "chin": "",
-                    "activation": None
-                }
-            },
-            "overallActivation": None,
-            "worstSide": "",
-            "asymmetry": None,
-            "confidence": None,
-            "wrongImageRequest": True
-        })
-    }
-]
-
-
-RESIZE_IMAGES = os.getenv("RESIZE_IMAGES", "false").lower() in ("1", "true", "yes")
-MAX_IMAGE_WIDTH = int(os.getenv("MAX_IMAGE_WIDTH", "512"))
-
-# --- OpenAI ---
-API_KEY = os.getenv("OPENAI_API_KEY", "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")
-client = OpenAI(api_key=API_KEY)
-MODEL = "gpt-4o-mini"
-
-SYSTEM_PROMPT = """
-You are a computer-vision assistant specialised in analysing calisthenics technique.
-Describe only what you see in the image; do not give medical advice or health
-recommendations. Never identify the person or infer personal traits (age, weight,
-fitness, etc.). If the content is NSFW or otherwise disallowed, refuse.
-
-For each image you must return EXACTLY ONE JSON object with the keys shown in the
-few-shot examples (technique, progression, activation, …, wrongImageRequest).
-Return nothing else.
-"""
-ALUMNI_MENU = {
-    "1": "Rutina para alumnos",
-    "2": "Servicio de propiocepción"
-}
-ALUMNI_CODES = {"147258369", "369258147", "789456123"}
-ALUMNI_BUTTONS = [["1. Rutina para alumnos", "2. Servicio de propiocepción"]]
 # --- Menús y botones ---
 MAIN_MENU = {
-    "1": "Contratar servicio personalizado",
-    "2": "Contratar servicio de propiocepción",
-    "3": "¿Qué es la propiocepción?",
-    "4": "¿Quiénes somos?",
-    "5": "Rutina de calistenia gratuita",
-    "6": "Volver al menú",
+    "1": "Configurar sesión",
+    "2": "Ver métricas",
+    "3": "Ajustar alertas",
+    "4": "Mis datos",
+    "5": "Calibrar dispositivo",
+    "6": "Ayuda",
+    "7": "Volver al menú",
 }
+
 MENU_BUTTONS = [
-    ["1. 📋 Contratar servicio personalizado", "2. 🤸‍♂️ Contratar servicio de propiocepción"],
-    ["3. ❓ ¿Qué es la propiocepción?",       "4. ℹ️ ¿Quiénes somos?"],
-    ["5. 🏋️ Quiero mi Rutina!",                "6. 🔄 Alumnos"],
-]
-PROP_MENU = {
-    "1": "Prueba gratuita",
-    "2": "Costos y pagar",
-}
-PROP_BUTTONS = [["1. Prueba gratuita", "2. Costos y pagar"]]
-EXERCISES = {
-    "1": "Handstand",
-    "2": "Full Planche",
-    "3": "Front Lever",
-    "4": "Muscle Up",
-    "5": "Dominadas",
-    "6": "Flexiones",
-}
-EX_BUTTONS = [
-    ["1. Handstand", "2. Full Planche"],
-    ["3. Front Lever", "4. Muscle Up"],
-    ["5. Dominadas",   "6. Flexiones"],
-]
-ROUTINE_MENU = [
-    [
-        InlineKeyboardButton("🏷️ Gratis", callback_data="free_routine"),
-        InlineKeyboardButton("💎 Paga",  callback_data="paid_routine")
-    ]
+    ["1. ⚙️ Configurar sesión", "2. 📊 Ver métricas"],
+    ["3. 🔔 Ajustar alertas", "4. 👤 Mis datos"],
+    ["5. 🎯 Calibrar dispositivo", "6. ❓ Ayuda"],
+    ["7. 🔄 Volver al menú"],
 ]
 
+# Configuración de sesión
+SESSION_MENU = {
+    "1": "30 minutos",
+    "2": "1 hora",
+    "3": "2 horas",
+    "4": "Personalizado",
+}
+
+SESSION_BUTTONS = [
+    ["1. 30 minutos", "2. 1 hora"],
+    ["3. 2 horas", "4. Personalizado"],
+]
+
+# Configuración de alertas
+ALERT_MENU = {
+    "1": "Cada 5 minutos",
+    "2": "Cada 10 minutos",
+    "3": "Cada 15 minutos",
+    "4": "Personalizado",
+}
+
+ALERT_BUTTONS = [
+    ["1. Cada 5 minutos", "2. Cada 10 minutos"],
+    ["3. Cada 15 minutos", "4. Personalizado"],
+]
+
+# Datos del paciente en memoria (temporal hasta que se guarde en BD)
+PATIENT_DATA = {
+    "nombre": "",
+    "edad": 0,
+    "diagnostico": "",
+    "sesion_duracion": 1800,  # 30 minutos por defecto
+    "alerta_intervalo": 300,  # 5 minutos por defecto
+    "calibrado": False
+}
 
 def extract_choice(text: str) -> str:
     """Extrae el dígito antes del punto o devuelve el texto si no hay formato 'n.'."""
-    return text.split(".")[0] if "." in text else text
+    if "." in text:
+        return text.split(".")[0].strip()
+    return text.strip()
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 1) Guarda TODO lo que quieras preservar
-    saved = {
-        "attempts_proprio": context.user_data.get("attempts_proprio"),
-        "proprio_done":     context.user_data.get("proprio_done"),
-        "count_proprio":    context.user_data.get("count_proprio"),
-        "last_date":        context.user_data.get("last_date"),
-        "is_alumno":        context.user_data.get("is_alumno"),
-    }
+    # No limpiamos el contexto completamente, solo el estado
+    if "state" in context.user_data:
+        context.user_data.pop("state")
 
-    # 2) Limpia solo el estado transitorio
-    context.user_data.clear()
-
-    # 3) Restaura únicamente lo guardado
-    for key, val in saved.items():
-        if val is not None:
-            context.user_data[key] = val
-
-    # 4) Cuenta cuántas veces se ha mostrado este menú en el chat
-    count = context.chat_data.get("menu_count", 0) + 1
-    context.chat_data["menu_count"] = count
-    logging.info(f"Menú principal mostrado {count} veces en chat {update.effective_chat.id}")
-
-    # 5) Envía el menú interactivo
+    # Envía el menú interactivo
     await update.message.reply_text(
-        "👋 <b>Bienvenido a Nexus</b>\nElige una opción:",
+        "👋 <b>Bienvenido al Sistema de Monitoreo Postural</b>\nElige una opción:",
         parse_mode=ParseMode.HTML,
         reply_markup=ReplyKeyboardMarkup(
             MENU_BUTTONS,
@@ -226,12 +144,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
     )
 
-    # 6) Asegúrate de reiniciar el estado de flujo
-    context.user_data["state"] = None
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.pop("is_alumno", None)
     await show_main_menu(update, context)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -244,440 +157,638 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if lower in ("hola", "hola!"):
         return await show_main_menu(update, context)
 
-    # Gestión de código de alumno
-    if state == "awaiting_alumni_code":
-        code = text
-        if code in ALUMNI_CODES:
-            context.user_data["is_alumno"] = True
+    # Gestión de datos del paciente
+    if state == "awaiting_patient_data":
+        if not context.user_data.get("awaiting_field"):
+            context.user_data["awaiting_field"] = "nombre"
             await update.message.reply_text(
-                "👥 <b>Zona Alumnos</b>\nElige una opción:",
-                parse_mode=ParseMode.HTML,
-                reply_markup=ReplyKeyboardMarkup(ALUMNI_BUTTONS, resize_keyboard=True, one_time_keyboard=True)
-            )
-            context.user_data["state"] = "awaiting_alumni_option"
-        else:
-            await update.message.reply_text(
-                "❌ Código no válido. Solo alumnos registrados pueden acceder. Contacta para contratar el servicio.",
-                parse_mode=ParseMode.HTML,
+                "Por favor, ingresa tu nombre completo:",
                 reply_markup=ReplyKeyboardRemove()
             )
-            await show_main_menu(update, context)
-        return
-
-    # Flujo submenú propiocepción
-    if state == "awaiting_prop_option":
-        if choice not in PROP_MENU:
-            return await update.message.reply_text(
-                "❌ Debes elegir 1 o 2.",
-                reply_markup=ReplyKeyboardMarkup(
-                    PROP_BUTTONS, resize_keyboard=True, one_time_keyboard=True
-                ),
+            return
+            
+        field = context.user_data["awaiting_field"]
+        if field == "nombre":
+            PATIENT_DATA["nombre"] = text
+            context.user_data["awaiting_field"] = "edad"
+            await update.message.reply_text(
+                "Ingresa tu edad:",
+                reply_markup=ReplyKeyboardRemove()
             )
-        if choice == "1":
-            if context.user_data.get("proprio_done"):
+            return
+        elif field == "edad":
+            try:
+                edad = int(text)
+                if edad < 1 or edad > 120:
+                    await update.message.reply_text(
+                        "❌ Por favor, ingresa una edad válida (entre 1 y 120 años):",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return
+                PATIENT_DATA["edad"] = edad
+                context.user_data["awaiting_field"] = "diagnostico"
                 await update.message.reply_text(
-                    "❌ Ya usaste tu prueba gratuita.",
-                    reply_markup=ReplyKeyboardRemove(),
+                    "Ingresa tu diagnóstico médico:",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Por favor, ingresa un número válido para la edad:",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return
+        elif field == "diagnostico":
+            PATIENT_DATA["diagnostico"] = text
+            context.user_data.pop("awaiting_field")
+            
+            # Guardar en base de datos
+            db = SessionLocal()
+            try:
+                paciente = await save_patient_data(db, PATIENT_DATA)
+                context.user_data["paciente_id"] = paciente.id
+                await update.message.reply_text(
+                    "✅ Datos guardados correctamente",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            except Exception as e:
+                logging.error(f"Error al guardar datos del paciente: {e}")
+                await update.message.reply_text(
+                    "❌ Error al guardar los datos. Por favor, intenta de nuevo.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            finally:
+                db.close()
+                
+            context.user_data["state"] = None
+            return await show_main_menu(update, context)
+
+    # Función auxiliar para verificar datos del paciente
+    def verify_patient_data():
+        if not PATIENT_DATA["nombre"] or not context.user_data.get("paciente_id"):
+            return False
+        return True
+
+    # Gestión de métricas
+    if choice == "2":
+        db = SessionLocal()
+        try:
+            paciente_id = context.user_data.get("paciente_id")
+            if not paciente_id:
+                await update.message.reply_text(
+                    "❌ Primero debes completar tus datos personales.",
+                    reply_markup=ReplyKeyboardRemove()
                 )
                 return await show_main_menu(update, context)
+                
+            metrics = await get_patient_metrics(db, paciente_id)
+            if not metrics:
+                await update.message.reply_text(
+                    "📊 <b>Métricas</b>\n\n"
+                    "No hay métricas disponibles aún.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            else:
+                await update.message.reply_text(
+                    "📊 <b>Métricas de postura</b>\n\n"
+                    f"• Postura correcta: {metrics.porcentaje_correcta:.1f}%\n"
+                    f"• Postura incorrecta: {metrics.porcentaje_incorrecta:.1f}%\n"
+                    f"• Tiempo sentado: {metrics.tiempo_sentado:.1f}s\n"
+                    f"• Tiempo parado: {metrics.tiempo_parado:.1f}s\n"
+                    f"• Alertas enviadas: {metrics.alertas_enviadas}\n\n"
+                    f"Última actualización: {metrics.created_at.strftime('%d/%m/%Y %H:%M')}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=ReplyKeyboardRemove()
+                )
+        except Exception as e:
+            logging.error(f"Error al obtener métricas: {e}")
             await update.message.reply_text(
-                "Elige la técnica a evaluar:",
+                "❌ Error al obtener las métricas. Por favor, intenta de nuevo.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        finally:
+            db.close()
+            
+        return await show_main_menu(update, context)
+
+    # Gestión de configuración de sesión
+    if state == "awaiting_session_config":
+        if choice not in SESSION_MENU:
+            return await update.message.reply_text(
+                "❌ Opción no válida. Elige una duración:",
                 reply_markup=ReplyKeyboardMarkup(
-                    EX_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                    SESSION_BUTTONS, resize_keyboard=True, one_time_keyboard=True
                 ),
             )
-            context.user_data["state"] = "awaiting_exercise"
-        else:
-            # Costos y pago
-            pay_btn = InlineKeyboardMarkup([[
-                InlineKeyboardButton("💳 Pagar ahora", url="https://pago.nexuscalistenia.com")
-            ]])
+        
+        if choice == "4":
             await update.message.reply_text(
-                "<b>Costos y pagar</b>\nServicio completo: $5000 pesos por mes hasta 8 consultas por dia.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=pay_btn,
+                "Ingresa la duración en minutos:",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data["state"] = "awaiting_custom_session"
+            return
+            
+        duration = int(choice) * 30 * 60  # Convertir a segundos
+        context.user_data["sesion_duracion"] = duration
+        PATIENT_DATA["sesion_duracion"] = duration
+        
+        # Verificar datos del paciente antes de preguntar por iniciar sesión
+        if not verify_patient_data():
+            await update.message.reply_text(
+                "❌ Primero debes completar tus datos personales.",
+                reply_markup=ReplyKeyboardRemove()
             )
             return await show_main_menu(update, context)
-        return
-
-    if state == "awaiting_exercise":
-        if choice not in EXERCISES:
-            return await update.message.reply_text(
-                "❌ Elige un número del 1 al 6 para la técnica.",
-                reply_markup=ReplyKeyboardMarkup(
-                    EX_BUTTONS, resize_keyboard=True, one_time_keyboard=True
-                ),
+            
+        if not PATIENT_DATA["calibrado"]:
+            await update.message.reply_text(
+                "❌ Primero debes calibrar el dispositivo.\n\n"
+                "Por favor, accede a la siguiente URL para calibrar:\n"
+                "http://172.18.0.2:30080/\n\n"
+                "Una vez completada la calibración, podrás iniciar la sesión.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=ReplyKeyboardRemove()
             )
-        context.user_data["exercise"] = EXERCISES[choice]
+            return await show_main_menu(update, context)
+        
         await update.message.reply_text(
-            f"Envía una foto practicando <b>{EXERCISES[choice]} </b> tomada con la camara frontal (❌ Selfie!!).",
-            parse_mode=ParseMode.HTML,
-            reply_markup=ReplyKeyboardRemove(),
+            f"✅ Sesión configurada para {int(duration/60)} minutos\n\n"
+            "¿Deseas iniciar la sesión ahora?",
+            reply_markup=ReplyKeyboardMarkup(
+                [["Sí", "No"]], resize_keyboard=True, one_time_keyboard=True
+            )
         )
-        context.user_data["state"] = "awaiting_proprio_photo"
+        context.user_data["state"] = "awaiting_session_start"
         return
 
-    if choice not in MAIN_MENU:
-        return await update.message.reply_text(
-            "❌ Opción no válida. Toca un botón.",
-            reply_markup=ReplyKeyboardMarkup(
-                MENU_BUTTONS, resize_keyboard=True, one_time_keyboard=True
-            ),
-        )
-        
-    if state == "awaiting_alumni_option":
-        if choice not in ALUMNI_MENU:
-            return await update.message.reply_text(
-                "❌ Debes elegir 1 o 2.",
+    # Gestión de inicio de sesión
+    if state == "awaiting_session_start":
+        if lower not in ("sí", "si", "no"):
+            await update.message.reply_text(
+                "❌ Por favor, responde Sí o No.",
                 reply_markup=ReplyKeyboardMarkup(
-                    ALUMNI_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                    [["Sí", "No"]], resize_keyboard=True, one_time_keyboard=True
                 )
             )
-        # 6.1 – Rutina para alumnos
-        if choice == "1":
+            return
+            
+        if lower in ("sí", "si"):
+            return await start_session(update, context)
+        else:
             await update.message.reply_text(
-                "<b>Rutina 🆓</b>\n…",
-                parse_mode=ParseMode.HTML,
+                "Sesión guardada. Puedes iniciarla más tarde desde el menú principal.",
                 reply_markup=ReplyKeyboardRemove()
             )
-            return 
+            return await show_main_menu(update, context)
 
-        # 6.2 – Servicio de propiocepción para alumnos
-        if choice == "2":
-            context.user_data["is_alumno"] = True
-            context.user_data["state"]     = "awaiting_exercise"
-            await update.message.reply_text(
-                "Perfecto, ¿qué técnica quieres evaluar?",
+    # Gestión de configuración de alertas
+    if state == "awaiting_alert_config":
+        if choice not in ALERT_MENU:
+            return await update.message.reply_text(
+                "❌ Opción no válida. Elige un intervalo:",
                 reply_markup=ReplyKeyboardMarkup(
-                    EX_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                    ALERT_BUTTONS, resize_keyboard=True, one_time_keyboard=True
                 ),
             )
-            return
-
-    elif choice == "2":
-        # Contratar propiocepción normal (no alumno)
-        await update.message.reply_text(
-            "Contratar propiocepción:",
-            reply_markup=ReplyKeyboardMarkup(PROP_BUTTONS, resize_keyboard=True, one_time_keyboard=True),
-        )
-        context.user_data["state"] = "awaiting_prop_option"
-        return
-    
-    key = f"attempts_{choice}"
-    if context.user_data.get(key):
-        return await update.message.reply_text("❌ Solo un intento por acción.")
-    context.user_data[key] = True
-
-    if choice == "1":
-        await update.message.reply_text(
-            "<b>Servicio personalizado</b>\n"
-            "• 4 sesiones semanales\n"
-            "• Seguimiento vía Telegram\n"
-            "• Ajustes mensuales\n\n"
-            "<i>Contacto: contacto@nexuscalistenia.com</i>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        return await show_main_menu(update, context)
-
-    if choice == "3":
-        await update.message.reply_text(
-            "<b>🤸‍♂️ ¿Qué es la propiocepción?</b>\n\n"
-            "🔹 Es la capacidad de sentir y controlar la posición y el movimiento de tu cuerpo, sin necesidad de mirar.\n"
-            "🔹 Permite mantener el equilibrio, la alineación y la técnica en cada ejercicio.\n\n"
-            "💪 En calistenia, una buena propiocepción mejora el control corporal, acelera el progreso y previene lesiones.\n\n"
-            "📍 Ejemplo práctico: sentir y corregir la alineación de tu pelvis durante un handstand.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        return await show_main_menu(update, context)
-
-    if choice == "4":
-        await update.message.reply_text(
-            "<b>🏋️‍♂️ ¿Quiénes somos?</b>\n\n"
-            "✨ Nexus es el punto de conexión entre <b>el cuerpo y la mente</b>, donde el movimiento se vuelve consciente y el entrenamiento, una experiencia de autoconocimiento.\n\n"
-            "💡 Creemos en la fuerza con propósito, en entender el cuerpo desde adentro, en la <b>propiocepción</b> como clave para moverte mejor, sin límites.\n\n"
-            "🤝 No se trata solo de entrenar, sino de sentir, conectar y potenciar cada movimiento con inteligencia.\n\n"
-            "🚀 <b>En Nexus el desafío es descubrir de qué estás hecho y hasta dónde podés llegar.</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        with open("nexus/logo-blanco.webp", "rb") as logo:
-            await update.message.reply_sticker(sticker=logo)
-        return await show_main_menu(update, context)
-
-    elif choice == "5":
-        # Limpia teclado y lanza submenú inline
-        await update.message.reply_text(
-            "<b>Selecciona tu rutina:</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(ROUTINE_MENU)
-        )
-        return
         
-    if choice == "6":
-        if context.user_data.get("is_alumno"):
-            # ya es alumno → muestro directamente el submenú
+        if choice == "4":
             await update.message.reply_text(
-                "👥 <b>Zona Alumnos</b>\nElige una opción:",
-                parse_mode=ParseMode.HTML,
-                reply_markup=ReplyKeyboardMarkup(ALUMNI_BUTTONS, resize_keyboard=True, one_time_keyboard=True)
-            )
-            context.user_data["state"] = "awaiting_alumni_option"
-        else:
-            # primer acceso → pido código
-            await update.message.reply_text(
-                "🔑 Ingresa tu código de alumno:",
+                "Ingresa el intervalo en minutos:",
                 reply_markup=ReplyKeyboardRemove()
             )
-            context.user_data["state"] = "awaiting_alumni_code"
+            context.user_data["state"] = "awaiting_custom_alert"
             return
-
-    
-
-async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("state") != "awaiting_proprio_photo":
-        return await update.message.reply_text("Primero elige Prueba gratuita y técnica.")
-
-    photo = update.message.photo[-1]
-    img_file = await photo.get_file()
-    img_bytes = await img_file.download_as_bytearray()
-    img = Image.open(BytesIO(img_bytes))
-
-    # ——— redimensión opcional ———
-    if RESIZE_IMAGES:
-        if img.width > MAX_IMAGE_WIDTH:
-            nh = int(img.height * MAX_IMAGE_WIDTH / img.width)
-            img = img.resize((MAX_IMAGE_WIDTH, nh), Image.LANCZOS)
-            logging.info(f"Imagen redimensionada a {img.size}")
-    else:
-        logging.info("Redimensionamiento desactivado, usando tamaño original")
-
-    buf = BytesIO()
-    img.save(buf, format="JPEG", quality=85)
-    context.user_data["b64_image"] = base64.b64encode(buf.getvalue()).decode()
-    context.user_data["attempts"] = 1
-    await analyze_proprioception(update, context)
-    return await show_main_menu(update, context)
-    
-
-
-from datetime import date
-
-async def analyze_proprioception(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # --- 0) Control de límite diario ---
-    today = date.today().isoformat()
-    # Si es un nuevo día, resetea
-    if context.user_data.get("last_date") != today:
-        context.user_data["last_date"] = today
-        context.user_data["count_proprio"] = 0
-    if context.user_data.get("is_alumno"):
-        max_daily = 5
-    else:
-        max_daily = 1
-    used = context.user_data.get("count_proprio", 0)
-    if used >= max_daily:
-        # Ya alcanzó su tope diario
+            
+        interval = int(choice) * 5 * 60  # Convertir a segundos
+        context.user_data["alerta_intervalo"] = interval
+        PATIENT_DATA["alerta_intervalo"] = interval
+        
         await update.message.reply_text(
-            "🚫 Has alcanzado el límite de 5 análisis de propiocepción por día. "
-            "Vuelve mañana para más.",
+            f"✅ Alertas configuradas cada {int(interval/60)} minutos",
             reply_markup=ReplyKeyboardRemove()
         )
-        context.user_data["proprio_done"] = True
         return await show_main_menu(update, context)
 
-    # --- 1) Recuperar datos para el análisis ---
-    exercise = context.user_data["exercise"]
-    b64 = context.user_data["b64_image"]
-    # user_prompt = (
-    #     f"Exercise requested by the student:{exercise}.\n\nPlease analyze the image"
-    # )
-
-    # --- 2) Llamada a la API ---
-    # resp = client.responses.create(
-    #     model=MODEL,
-    #     user=str(update.effective_user.id),
-    #     input=[
-    #         {"role": "system", "content": SYSTEM_PROMPT},
-    #         {"role": "user",   "content": [
-    #             {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
-    #             {"type": "input_text",  "text": user_prompt}
-                
-    #         ]}
-    #     ],
-    #     max_output_tokens=200,
-    #     temperature=0.0
-    # )
-    
-    try:
-        response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=build_messages(b64, exercise),
-        temperature=0,
-        max_tokens=500
-    )
-    except client.InternalServerError as e:
-        logging.error("OpenAI 500: %s", e)
+    # Gestión de calibración
+    if choice == "5":
         await update.message.reply_text(
-            "⚠️ Hubo un problema en el servidor de OpenAI. Intentaré de nuevo en unos segundos."
+            "🎯 <b>Calibración del dispositivo</b>\n\n"
+            "Para calibrar el dispositivo, accede a la siguiente URL:\n"
+            "http://172.18.0.2:30080/\n\n"
+            "Una vez completada la calibración, marca esta opción como completada.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=ReplyKeyboardMarkup(
+                [["✅ Marcar como calibrado"]], resize_keyboard=True, one_time_keyboard=True
+            )
         )
+        context.user_data["state"] = "awaiting_calibration"
         return
 
+    if state == "awaiting_calibration":
+        if text == "✅ Marcar como calibrado":
+            PATIENT_DATA["calibrado"] = True
+            await update.message.reply_text(
+                "✅ Dispositivo calibrado correctamente",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return await show_main_menu(update, context)
 
+    # Gestión de actualización de datos
+    if state == "awaiting_data_update":
+        if lower not in ("sí", "si", "no"):
+            await update.message.reply_text(
+                "❌ Por favor, responde Sí o No.",
+                reply_markup=ReplyKeyboardMarkup(
+                    [["Sí", "No"]], resize_keyboard=True, one_time_keyboard=True
+                )
+            )
+            return
+            
+        if lower in ("sí", "si"):
+            context.user_data["state"] = "awaiting_patient_data"
+            context.user_data["awaiting_field"] = "nombre"
+            await update.message.reply_text(
+                "Por favor, ingresa tu nombre completo:",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            return await show_main_menu(update, context)
+
+    # Gestión de confirmación de sesión existente
+    if state == "awaiting_session_confirm":
+        if lower not in ("mantener", "cambiar"):
+            await update.message.reply_text(
+                "❌ Por favor, elige una opción válida.",
+                reply_markup=ReplyKeyboardMarkup(
+                    [["Mantener", "Cambiar"]], resize_keyboard=True, one_time_keyboard=True
+                )
+            )
+            return
+            
+        if lower == "mantener":
+            # Verificar datos del paciente antes de preguntar por iniciar sesión
+            if not verify_patient_data():
+                await update.message.reply_text(
+                    "❌ Primero debes completar tus datos personales.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return await show_main_menu(update, context)
+                
+            if not PATIENT_DATA["calibrado"]:
+                await update.message.reply_text(
+                    "❌ Primero debes calibrar el dispositivo.\n\n"
+                    "Por favor, accede a la siguiente URL para calibrar:\n"
+                    "http://172.18.0.2:30080/\n\n"
+                    "Una vez completada la calibración, podrás iniciar la sesión.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return await show_main_menu(update, context)
+            
+            await update.message.reply_text(
+                f"✅ Sesión configurada para {int(context.user_data['sesion_duracion']/60)} minutos\n\n"
+                "¿Deseas iniciar la sesión ahora?",
+                reply_markup=ReplyKeyboardMarkup(
+                    [["Sí", "No"]], resize_keyboard=True, one_time_keyboard=True
+                )
+            )
+            context.user_data["state"] = "awaiting_session_start"
+            return
+        else:  # Si elige "cambiar"
+            await update.message.reply_text(
+                "Elige la duración de la sesión:",
+                reply_markup=ReplyKeyboardMarkup(
+                    SESSION_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                ),
+            )
+            context.user_data["state"] = "awaiting_session_config"
+            return
+
+    # Manejo del menú principal
+    if choice in MAIN_MENU:
+        if choice == "1":
+            # Si ya hay una duración configurada, preguntar si quiere mantenerla o cambiarla
+            if context.user_data.get("sesion_duracion"):
+                await update.message.reply_text(
+                    f"Ya tienes una sesión configurada para {int(context.user_data['sesion_duracion']/60)} minutos.\n\n"
+                    "¿Deseas mantener esta configuración o cambiarla?",
+                    reply_markup=ReplyKeyboardMarkup(
+                        [["Mantener", "Cambiar"]], resize_keyboard=True, one_time_keyboard=True
+                    )
+                )
+                context.user_data["state"] = "awaiting_session_confirm"
+                return
+            else:
+                await update.message.reply_text(
+                    "Elige la duración de la sesión:",
+                    reply_markup=ReplyKeyboardMarkup(
+                        SESSION_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                    ),
+                )
+                context.user_data["state"] = "awaiting_session_config"
+                return
+
+        elif choice == "3":
+            # Ajustar alertas
+            await update.message.reply_text(
+                "Elige el intervalo para las alertas:",
+                reply_markup=ReplyKeyboardMarkup(
+                    ALERT_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                ),
+            )
+            context.user_data["state"] = "awaiting_alert_config"
+            return
+
+        elif choice == "4":
+            # Mis datos
+            if not PATIENT_DATA["nombre"]:
+                context.user_data["state"] = "awaiting_patient_data"
+                context.user_data["awaiting_field"] = "nombre"
+                await update.message.reply_text(
+                    "Por favor, ingresa tu nombre completo:",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            else:
+                await update.message.reply_text(
+                    "👤 <b>Mis datos</b>\n\n"
+                    f"Nombre: {PATIENT_DATA['nombre']}\n"
+                    f"Edad: {PATIENT_DATA['edad']}\n"
+                    f"Diagnóstico: {PATIENT_DATA['diagnostico']}\n\n"
+                    "¿Deseas modificar tus datos?",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=ReplyKeyboardMarkup(
+                        [["Sí", "No"]], resize_keyboard=True, one_time_keyboard=True
+                    )
+                )
+                context.user_data["state"] = "awaiting_data_update"
+            return
+
+        elif choice == "6":
+            # Ayuda
+            await update.message.reply_text(
+                "❓ <b>Ayuda</b>\n\n"
+                "1. Configura la duración de tu sesión\n"
+                "2. Ajusta las alertas según tus necesidades\n"
+                "3. Completa tus datos personales\n"
+                "4. Calibra el dispositivo\n"
+                "5. Consulta tu historial de sesiones\n\n"
+                "Para más ayuda, contacta a tu terapeuta.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return await show_main_menu(update, context)
+
+        elif choice == "7":
+            return await show_main_menu(update, context)
+    else:
+        # Si no es una opción válida del menú principal y no estamos en un estado específico
+        if not state:
+            await update.message.reply_text(
+                "❌ Por favor, selecciona una opción del menú:",
+                reply_markup=ReplyKeyboardMarkup(
+                    MENU_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                ),
+            )
+        return
+
+async def handle_custom_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        raw = json.loads(response.choices[0].message.content)
-    except json.JSONDecodeError as e:
-        logging.error("JSON invalid: %s", e)
-        await update.message.reply_text("⚠️ No pude interpretar la respuesta, inténtalo de nuevo.")
+        minutes = int(update.message.text)
+        if minutes < 1 or minutes > 240:  # Máximo 4 horas
+            await update.message.reply_text(
+                "❌ La duración debe estar entre 1 y 240 minutos.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return
+            
+        duration = minutes * 60  # Convertir a segundos
+        context.user_data["sesion_duracion"] = duration
+        PATIENT_DATA["sesion_duracion"] = duration
+        
+        await update.message.reply_text(
+            f"✅ Sesión configurada para {minutes} minutos\n\n"
+            "¿Deseas iniciar la sesión ahora?",
+            reply_markup=ReplyKeyboardMarkup(
+                [["Sí", "No"]], resize_keyboard=True, one_time_keyboard=True
+            )
+        )
+        context.user_data["state"] = "awaiting_session_start"
         return
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Por favor, ingresa un número válido de minutos.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+async def handle_custom_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        minutes = int(update.message.text)
+        if minutes < 1 or minutes > 60:  # Máximo 1 hora
+            await update.message.reply_text(
+                "❌ El intervalo debe estar entre 1 y 60 minutos.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return
+            
+        interval = minutes * 60  # Convertir a segundos
+        context.user_data["alerta_intervalo"] = interval
+        PATIENT_DATA["alerta_intervalo"] = interval
+        
+        await update.message.reply_text(
+            f"✅ Alertas configuradas cada {minutes} minutos",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return await show_main_menu(update, context)
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Por favor, ingresa un número válido de minutos.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+async def start_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Verificar que el paciente tenga datos y esté calibrado
+    if not PATIENT_DATA["nombre"] or not context.user_data.get("paciente_id"):
+        await update.message.reply_text(
+            "❌ Primero debes completar tus datos personales.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return await show_main_menu(update, context)
+        
+    if not PATIENT_DATA["calibrado"]:
+        await update.message.reply_text(
+            "❌ Primero debes calibrar el dispositivo.\n\n"
+            "Por favor, accede a la siguiente URL para calibrar:\n"
+            "http://172.18.0.2:30080/\n\n"
+            "Una vez completada la calibración, podrás iniciar la sesión.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return await show_main_menu(update, context)
+        
+    duration = context.user_data.get("sesion_duracion", PATIENT_DATA["sesion_duracion"])
+    interval = context.user_data.get("alerta_intervalo", PATIENT_DATA["alerta_intervalo"])
     
-    formatted = format_analysis_for_telegram(raw)
-    await update.message.reply_text(
-        formatted,
-        parse_mode=ParseMode.HTML,
-        reply_markup=ReplyKeyboardRemove()
-    )
+    # Crear nueva sesión en la base de datos
+    db = SessionLocal()
+    try:
+        sesion = await save_session(db, context.user_data["paciente_id"], duration)
+        session_id = sesion.id
+        
+        context.user_data["current_session"] = {
+            "id": session_id,
+            "start_time": time.time(),
+            "duration": duration,
+            "alert_interval": interval,
+            "alerts_sent": 0
+        }
+        
+        await update.message.reply_text(
+            f"✅ Sesión iniciada\n\n"
+            f"⏱️ Duración: {duration/60} minutos\n"
+            f"🔔 Alertas: cada {interval/60} minutos\n\n"
+            "La sesión se detendrá automáticamente al finalizar.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        # Programar alertas
+        context.job_queue.run_repeating(
+            send_alert,
+            interval=interval,
+            first=interval,
+            data={"session_id": session_id}
+        )
+        
+        # Programar fin de sesión
+        context.job_queue.run_once(
+            end_session,
+            duration,
+            data={"session_id": session_id}
+        )
+    except Exception as e:
+        logging.error(f"Error al iniciar sesión: {e}")
+        await update.message.reply_text(
+            "❌ Error al iniciar la sesión. Por favor, intenta de nuevo.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    finally:
+        db.close()
 
-    # --- 4) Aumentar el contador y marcar como hecho ---
-    context.user_data["count_proprio"] = used + 1
-    context.user_data["proprio_done"]  = True
-
-
-async def free_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text(
+async def send_alert(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    session_id = job.data["session_id"]
+    
+    if session_id not in context.user_data.get("current_session", {}).get("id"):
+        return
+        
+    session = context.user_data["current_session"]
+    session["alerts_sent"] += 1
+    
+    await context.bot.send_message(
+        chat_id=context.job.chat_id,
         text=(
-            "<b>Rutina Gratuita 🆓</b>\n\n"
-            "1️⃣ <b>Calentamiento (×2):</b>\n"
-            "   • Shoulder Rotations\n"
-            "   • Elbow Rotations\n"
-            "   • Arm Swings\n"
-            "   • Wrist Rotations\n"
-            "   • Band Shoulder Dislocates\n\n"
-            "2️⃣ <b>Movilidad Dinámica:</b>\n"
-            "   • 15\" Hollow Body\n"
-            "   • 10\" Forearm Plank\n"
-            "   • Shoulder Taps ×8\n"
-            "   • Scapular Push-Ups ×8\n"
-            "   • Reverse Snow Angels ×5\n\n"
-            "3️⃣ <b>Básicos Específicos (×3):</b>\n"
-            "   • Planche Lean 20\" \n"
-            "   • Tuck Back Lever 10\"\n"
-            "   • Skin the Cat ×5\n\n"
-            "4️⃣ <b>Básicos (×3):</b>\n"
-            "   • Pull-Ups ×8\n"
-            "   • Push-Ups ×12\n"
-            "   • Dips ×10\n"
-            "   • Air Squats ×15\n\n"
-            "5️⃣ <b>Enfriamiento:</b>\n"
-            "   • Chest Stretch 30\" por lado\n"
-            "   • Child’s Pose 30\"\n"
-            "   • Shoulder Cross-Body 30\" por lado\n"
-            "   • Butterfly Stretch 30\"\n\n"
-            "¡Disfruta tu entrenamiento! 💪"
+            "🔔 <b>Recordatorio de postura</b>\n\n"
+            "Por favor, verifica tu postura:\n"
+            "• Espalda recta\n"
+            "• Hombros relajados\n"
+            "• Pantalla a la altura de los ojos\n"
+            "• Pies apoyados en el suelo\n\n"
+            f"Tiempo restante: {int((session['duration'] - (time.time() - session['start_time'])) / 60)} minutos"
         ),
         parse_mode=ParseMode.HTML
     )
-    # vuelve al menú principal tras unos segundos
-    return await show_main_menu(update, context)
 
-async def paid_routine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Acknowledge the callback to remove the “loading” state
-    await update.callback_query.answer()
-    # Construimos un InlineKeyboard con la tarjeta y enlace de pago
-    pay_btn = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💳 Pagar servicio de propiocepción", url="https://pago.nexuscalistenia.com")
-    ]])
-    # Editamos el mensaje original para mostrar solo el botón de pago
-    await update.callback_query.edit_message_text(
-        text=(
-            "<b>Servicio de propiocepción Premium</b>\n\n"
-            "Haz clic en el botón para proceder al pago y activar tu análisis personalizado."
-        ),
-        parse_mode=ParseMode.HTML,
-        reply_markup=pay_btn
-    )
-def format_analysis_for_telegram(analysis: dict) -> str:
-    """
-    Recibe el dict con la nueva estructura y devuelve un string detallado
-    para enviar por Telegram (parse_mode=HTML).
-    """
-    # 0) Validar imagen equivocada
-    if analysis.get("wrongImageRequest", False):
-        return (
-            "❌ <b>Imagen no válida</b>\n"
-            "La foto no corresponde a la técnica solicitada. "
-            "Por favor envía una imagen de la técnica correcta."
+async def end_session(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    session_id = job.data["session_id"]
+    
+    if session_id not in context.user_data.get("current_session", {}).get("id"):
+        return
+        
+    session = context.user_data["current_session"]
+    
+    # Guardar métricas finales
+    db = SessionLocal()
+    try:
+        metrics = {
+            "porcentaje_correcta": 0.0,  # Estos valores deberían venir del sistema de monitoreo
+            "porcentaje_incorrecta": 0.0,
+            "tiempo_sentado": 0.0,
+            "tiempo_parado": 0.0,
+            "alertas_enviadas": session["alerts_sent"]
+        }
+        await save_metrics(db, session_id, metrics)
+        
+        await context.bot.send_message(
+            chat_id=context.job.chat_id,
+            text=(
+                "✅ <b>Sesión finalizada</b>\n\n"
+                f"• Duración: {session['duration']/60} minutos\n"
+                f"• Alertas enviadas: {session['alerts_sent']}\n\n"
+                "¡Gracias por usar el sistema de monitoreo postural!"
+            ),
+            parse_mode=ParseMode.HTML
         )
+    except Exception as e:
+        logging.error(f"Error al finalizar sesión: {e}")
+    finally:
+        db.close()
+    
+    # Limpiar datos de la sesión
+    context.user_data.pop("current_session", None)
 
-    # 1) Datos generales
-    tech = analysis.get("technique", "").replace("_", " ").title()
-    prog = analysis.get("progression", "").replace("_", " ").title()
-    overall = analysis.get("overallActivation", 0.0)
-    asym    = analysis.get("asymmetry", 0.0)
-    conf    = analysis.get("confidence", 0.0) * 100  # convertir a %
-    worst   = analysis.get("worstSide", "left")
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-    left  = analysis["sides"]["left"]
-    right = analysis["sides"]["right"]
-
-    # 2) Construir sección por lado
-    def side_block(name: str, data: dict) -> str:
-        return (
-            f"🔹 <b>{name}</b>\n"
-            f"• Espalda: {data.get('back','N/A').replace('_',' ')}\n"
-            f"• Escápula: {data.get('scapulae','N/A').replace('_',' ')}\n"
-            f"• Hombros: {data.get('shoulders','N/A').replace('_',' ')}\n"
-            f"• Caderas: {data.get('hips','N/A').replace('_',' ')}\n"
-            f"• Activación: <b>{data.get('activation',0.0):.1f}%</b>\n\n"
-        )
-
-    left_name  = "LADO IZQUIERDO"
-    right_name = "LADO DERECHO"
-
-    # 3) Mensaje completo
-    msg = (
-        f"📸 <b>Análisis de {tech} – {prog}</b>\n\n"
-        f"{side_block(left_name, left)}"
-        f"{side_block(right_name, right)}"
-        f"🤸‍♂️ <b>Propiocepción global:</b> {overall:.1f}%\n"
-        f"🔻 <b>Lado más débil:</b> {'izquierdo' if worst=='left' else 'derecho'}\n"
-        f"⚖️ <b>Asimetría:</b> {asym:.1f}%\n"
-        f"🔒 <b>Confianza del modelo:</b> {conf:.1f}%"
+async def save_patient_data(db: Session, data: dict):
+    paciente = Paciente(
+        nombre=data["nombre"],
+        edad=data["edad"],
+        diagnostico=data["diagnostico"]
     )
-    return msg
+    db.add(paciente)
+    db.commit()
+    db.refresh(paciente)
+    return paciente
 
-
-
-def build_messages(b64: str, exercise: str):
-    user_prompt = f"""
-    Exercise requested by the student: {exercise}.
-
-    Analyse the image and report, for both left and right sides, whether each joint is
-    stable, as well as proprioception percentages.  Focus on the observable position of:
-    
-    • back: lordosis:+|–; cyphosis:+|–; neutral; sway_back; flat_back; scoliosis:mild|moderate  
-    • scapulae: protraction/retraction/elevation/depression:mild|moderate|excessive; rotation:superior|inferior; winging:medial|lateral  
-    • shoulders: abduction/adduction; rotation:internal|external; elevation/depression; hyper_elevated; dropped; anterior_protrusion  
-    • hips: anteversion/posterior_tilt; lateral_tilt:left|right; rotation:internal|external; abduction/adduction; iliac_crest_elev  
-
-    Then compute overallActivation%, asymmetry%, worstSide, confidence.
-    If the posture does not match the declared exercise, set "wrongImageRequest": true
-    and leave the remaining fields null or default.
-
-    Respond ONLY with the JSON object — no commentary, no medical advice.
-    """
-    user_content = [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "details": "auto"}},
-                {"type": "text",  "text": user_prompt}
-                
-    ]
-    return (
-        [{"role": "system", "content": SYSTEM_PROMPT}]
-        + [{"role": "user", "content": user_content}]
+async def save_session(db: Session, paciente_id: int, duration: int, mode: str = "monitor_activo"):
+    sesion = Sesion(
+        paciente_id=paciente_id,
+        intervalo_segundos=duration,
+        modo=mode
     )
-    
-    
+    db.add(sesion)
+    db.commit()
+    db.refresh(sesion)
+    return sesion
+
+async def save_metrics(db: Session, sesion_id: int, metrics: dict):
+    metrica = MetricaPostural(
+        sesion_id=sesion_id,
+        porcentaje_correcta=metrics["porcentaje_correcta"],
+        porcentaje_incorrecta=metrics["porcentaje_incorrecta"],
+        tiempo_sentado=metrics["tiempo_sentado"],
+        tiempo_parado=metrics["tiempo_parado"],
+        alertas_enviadas=metrics["alertas_enviadas"]
+    )
+    db.add(metrica)
+    db.commit()
+    db.refresh(metrica)
+    return metrica
+
+async def get_patient_metrics(db: Session, paciente_id: int):
+    return db.query(MetricaPostural)\
+        .join(Sesion)\
+        .filter(Sesion.paciente_id == paciente_id)\
+        .order_by(MetricaPostural.created_at.desc())\
+        .first()
+
 if __name__ == "__main__":
     app = ApplicationBuilder()\
         .token(os.getenv("TELEGRAM_TOKEN", "7600712992:AAGKYF0lCw7h7B-ROthuOKlb90QZM20MZis"))\
@@ -685,10 +796,17 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_image))
-    # Al construir el bot:
-    app.add_handler(CallbackQueryHandler(free_routine, pattern="^free_routine$"))
-    app.add_handler(CallbackQueryHandler(paid_routine, pattern="^paid_routine$"))
-
+    
+    # Nuevos handlers para sesiones personalizadas
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^\d+$") & filters.ChatType.PRIVATE,
+        handle_custom_session,
+        block=False
+    ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^\d+$") & filters.ChatType.PRIVATE,
+        handle_custom_alert,
+        block=False
+    ))
 
     app.run_polling()
