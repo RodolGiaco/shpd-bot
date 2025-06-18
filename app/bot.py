@@ -58,7 +58,7 @@ class Sesion(Base):
 class MetricaPostural(Base):
     __tablename__ = "metricas_posturales"
     id = Column(Integer, primary_key=True, index=True)
-    sesion_id = Column(Integer, ForeignKey("sesiones.id"))
+    sesion_id = Column(UUID, ForeignKey("sesiones.id"))
     porcentaje_correcta = Column(Float)
     porcentaje_incorrecta = Column(Float)
     tiempo_sentado = Column(Float)
@@ -302,12 +302,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # --- Lógica de Redis ---
             if r:
                 redis_key = f"shpd-session:{session_id}"
+        
                 session_data = {
                     "start_ts": int(time.time()),
                     "intervalo_segundos": sesion.intervalo_segundos,
                 }
                 r.hset(redis_key, mapping=session_data)
                 logging.info(f"Sesión {session_id} guardada en Redis.")
+                
+                redis_shpd_key = f"shpd-data:{device_id}"
+                shpd_data = {
+                    "session_id": session_id,
+                }
+                r.hset(redis_shpd_key, mapping=shpd_data)
+                logging.info(f"Shpd-data {device_id} guardada en Redis.")
             else:
                 logging.error("No se pudo guardar la sesión en Redis.")
 
