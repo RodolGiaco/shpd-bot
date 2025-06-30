@@ -47,7 +47,6 @@ class Paciente(Base):
     edad = Column(Integer)
     sexo = Column(String)
     diagnostico = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
 
 class Sesion(Base):
     __tablename__ = "sesiones"
@@ -64,7 +63,6 @@ class MetricaPostural(Base):
     tiempo_sentado = Column(Float)
     tiempo_parado = Column(Float)
     alertas_enviadas = Column(Integer)
-    created_at = Column(DateTime, default=datetime.utcnow)
 
 # Crear tablas si no existen
 Base.metadata.create_all(bind=engine)
