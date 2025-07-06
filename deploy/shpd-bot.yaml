@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: shpd-bot
-          image: rodolgiaco/shpd-bot:1.0.0 
+          image: shpd-bot:1.0.0 
           imagePullPolicy: IfNotPresent
           env:
             - name: DATABASE_URL
