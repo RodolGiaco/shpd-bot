@@ -107,6 +107,12 @@ SESSION_BUTTONS = [
     ["3. 1 hora", "4. Personalizado"],
 ]
 
+# Opciones de sexo para el registro de pacientes
+GENDER_BUTTONS = [
+    ["Masculino", "Femenino"],
+    ["Otro"]
+]
+
 # Estados de registro de paciente
 FIELDS = ["nombre", "edad", "sexo", "diagnostico", "device_id"]
 
@@ -193,10 +199,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if field == 'edad':
             try:
                 v = int(val)
-                if v < 1 or v > 120: raise ValueError
+                if v < 1 or v > 120:
+                    raise ValueError
                 context.user_data['edad'] = v
-            except:
-                return await update.message.reply_text("❌ Edad inválida. Ingresa un número entre 1 y 120:")
+            except Exception:
+                return await update.message.reply_text(
+                    "❌ Edad inválida. Ingresa un número entre 1 y 120:"
+                )
+        elif field == 'sexo':
+            mapa = {
+                'masculino': 'M',
+                'femenino': 'F',
+                'otro': 'O',
+                'm': 'M',
+                'f': 'F',
+                'o': 'O'
+            }
+            val_normalizado = mapa.get(val.lower())
+            if not val_normalizado:
+                return await update.message.reply_text(
+                    "Selecciona una opción válida:",
+                    reply_markup=ReplyKeyboardMarkup(
+                        GENDER_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                    )
+                )
+            context.user_data['sexo'] = val_normalizado
         else:
             context.user_data[field] = val
         idx += 1
@@ -204,10 +231,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['field_index'] = idx
             prompts = {
                 'nombre': "Ingresa tu edad:",
-                'edad': "Ingresa tu sexo (M/F/O):",
                 'sexo': "Ingresa tu diagnóstico médico:",
                 'diagnostico': "Ingresa el ID de tu dispositivo (código de la pegatina):"
             }
+            if field == 'edad':
+                return await update.message.reply_text(
+                    "Selecciona tu sexo:",
+                    reply_markup=ReplyKeyboardMarkup(
+                        GENDER_BUTTONS, resize_keyboard=True, one_time_keyboard=True
+                    )
+                )
             return await update.message.reply_text(prompts[field])
         # Todos los datos ingresados, guardar en BD
         db: Session = SessionLocal()
