@@ -129,7 +129,7 @@ PATIENT_MENU_BUTTONS = [
 SPECIALIST_MENU_BUTTONS = [
     ["📋 Ver lista de pacientes", "📊 Informes de paciente"],
     ["⚙️ Ajustes de servicio", "🔔 Alertas de riesgo"],
-    ["🗂️ Exportar datos", "💬 Chat con especialista"],
+    ["🗂️ Exportar datos", "💬 Chat con pacientes"],
 ]
 
 # Utilidad para extraer la opción seleccionada
@@ -284,9 +284,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         elif field == 'sexo':
             mapa = {
-                'masculino': 'M',
-                'femenino': 'F',
-                'otro': 'O',
+                'masculino': 'Masculino',
+                'femenino': 'Femenino',
+                'otro': 'Otro',
                 'm': 'M',
                 'f': 'F',
                 'o': 'O'
