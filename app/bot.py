@@ -7,7 +7,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     InlineKeyboardMarkup,
-    InlineKeyboardButton
+    InlineKeyboardButton,
 )
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -116,6 +116,21 @@ GENDER_BUTTONS = [
 # Estados de registro de paciente
 FIELDS = ["nombre", "edad", "sexo", "diagnostico", "device_id"]
 
+# --- Selectores de rol y menús personalizados ---
+ROLE_BUTTONS = [["Paciente", "Especialista"]]
+
+PATIENT_MENU_BUTTONS = [
+    ["📝 Mi historial de posturas", "🎯 Mis objetivos ergonómicos"],
+    ["📅 Programa de recordatorios", "❓ Ayuda y soporte"],
+    ["🏆 Logros y badges"],
+]
+
+SPECIALIST_MENU_BUTTONS = [
+    ["📋 Ver lista de pacientes", "📊 Informes de paciente"],
+    ["⚙️ Ajustes de servicio", "🔔 Alertas de riesgo"],
+    ["🗂️ Exportar datos", "💬 Chat con especialista"],
+]
+
 # Utilidad para extraer la opción seleccionada
 def extract_choice(text: str) -> str:
     if "." in text:
@@ -123,20 +138,92 @@ def extract_choice(text: str) -> str:
     return text.strip()
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra el menú principal según el rol guardado."""
     context.user_data.pop("state", None)
+    role = context.user_data.get("rol")
+
+    if role == "especialista":
+        keyboard = SPECIALIST_MENU_BUTTONS
+        title = "👋 <b>Menú de Especialista</b>"
+    else:
+        keyboard = PATIENT_MENU_BUTTONS
+        title = "👋 <b>Menú de Paciente</b>"
+
     await update.message.reply_text(
-        "👋 <b>Bienvenido al Sistema de Monitoreo Postural</b>\nElige una opción:",
+        f"{title}\nElige una opción:",
         parse_mode=ParseMode.HTML,
-        reply_markup=ReplyKeyboardMarkup(MENU_BUTTONS, resize_keyboard=True, one_time_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu(update, context)
+    """Solicita el rol del usuario al iniciar la conversación."""
+    # Limpiar rol previo y teclado
+    context.user_data.pop("rol", None)
+    context.user_data.pop("state", None)
+    await update.message.reply_text(
+        "¿Eres Paciente o Especialista?",
+        reply_markup=ReplyKeyboardMarkup(ROLE_BUTTONS, resize_keyboard=True, one_time_keyboard=True)
+    )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     choice = text.split('.')[0] if "." in text else text
     state = context.user_data.get("state")
+
+    # --- Selección de rol inicial ---
+    if context.user_data.get("rol") is None:
+        if text.lower() == "paciente":
+            context.user_data["rol"] = "paciente"
+            return await show_main_menu(update, context)
+        elif text.lower() == "especialista":
+            context.user_data["rol"] = "especialista"
+            return await show_main_menu(update, context)
+        else:
+            return await update.message.reply_text(
+                "Por favor selecciona 'Paciente' o 'Especialista'.",
+                reply_markup=ReplyKeyboardMarkup(ROLE_BUTTONS, resize_keyboard=True, one_time_keyboard=True)
+            )
+
+    role = context.user_data.get("rol")
+
+    # --- Opciones del menú de Especialista ---
+    if role == "especialista":
+        if text == "📋 Ver lista de pacientes":
+            await update.message.reply_text("Funcionalidad de lista de pacientes pendiente.")
+            return
+        if text == "📊 Informes de paciente":
+            await update.message.reply_text("Funcionalidad de informes pendiente.")
+            return
+        if text == "⚙️ Ajustes de servicio":
+            await update.message.reply_text("Funcionalidad de ajustes pendiente.")
+            return
+        if text == "🔔 Alertas de riesgo":
+            await update.message.reply_text("Funcionalidad de alertas pendiente.")
+            return
+        if text == "🗂️ Exportar datos":
+            await update.message.reply_text("Funcionalidad de exportación pendiente.")
+            return
+        if text == "💬 Chat con especialista":
+            await update.message.reply_text("Funcionalidad de chat pendiente.")
+            return
+
+    # --- Opciones del menú de Paciente ---
+    if role == "paciente":
+        if text == "📝 Mi historial de posturas":
+            await update.message.reply_text("Funcionalidad de historial pendiente.")
+            return
+        if text == "🎯 Mis objetivos ergonómicos":
+            await update.message.reply_text("Funcionalidad de objetivos pendiente.")
+            return
+        if text == "📅 Programa de recordatorios":
+            await update.message.reply_text("Funcionalidad de recordatorios pendiente.")
+            return
+        if text == "❓ Ayuda y soporte":
+            await update.message.reply_text("Funcionalidad de ayuda pendiente.")
+            return
+        if text == "🏆 Logros y badges":
+            await update.message.reply_text("Funcionalidad de logros pendiente.")
+            return
 
     # Manejo de 'Mis datos' (opción 4)
     if choice == "4":
