@@ -14,6 +14,7 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -129,8 +130,79 @@ PATIENT_MENU_BUTTONS = [
 SPECIALIST_MENU_BUTTONS = [
     ["📋 Ver lista de pacientes", "📊 Informes de paciente"],
     ["⚙️ Ajustes de servicio", "🔔 Alertas de riesgo"],
-    ["🗂️ Exportar datos", "💬 Chat con pacientes"],
+    ["🗂️ Exportar datos", "💬 Chat con especialista"],
 ]
+
+# --- Utilidades de pacientes ---
+def _format_patient(full_name: str) -> str:
+    parts = full_name.split()
+    if len(parts) >= 2:
+        last = parts[-1]
+        first = " ".join(parts[:-1])
+        return f"{last} {first}"
+    return full_name
+
+
+async def list_patients(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra la lista de pacientes como botones."""
+    db: Session = SessionLocal()
+    try:
+        pacientes = db.query(Paciente).order_by(Paciente.nombre).all()
+    finally:
+        db.close()
+
+    if not pacientes:
+        await update.effective_message.reply_text("No se encontraron pacientes registrados.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(_format_patient(p.nombre), callback_data=f"patient:{p.id}")]
+        for p in pacientes
+    ]
+    await update.effective_message.reply_text(
+        "👥 <b>Lista de pacientes</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def patient_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra los detalles de un paciente seleccionado."""
+    query = update.callback_query
+    await query.answer()
+    patient_id = int(query.data.split(":")[1])
+
+    db: Session = SessionLocal()
+    try:
+        paciente = db.query(Paciente).filter(Paciente.id == patient_id).first()
+    finally:
+        db.close()
+
+    if not paciente:
+        await query.edit_message_text("Paciente no encontrado.")
+        return
+
+    msg = (
+        f"<b>{paciente.nombre}</b>\n"
+        f"Edad: {paciente.edad}\n"
+        f"Sexo: {paciente.sexo}\n"
+        f"Diagnóstico: {paciente.diagnostico}\n"
+        f"Dispositivo: <code>{paciente.device_id}</code>"
+    )
+    await query.edit_message_text(
+        msg,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔙 Volver", callback_data="list_patients")]]
+        ),
+    )
+
+
+async def list_patients_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback para volver a listar pacientes."""
+    query = update.callback_query
+    await query.answer()
+    await list_patients(update, context)
 
 # Utilidad para extraer la opción seleccionada
 def extract_choice(text: str) -> str:
@@ -190,7 +262,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Opciones del menú de Especialista ---
     if role == "especialista":
         if text == "📋 Ver lista de pacientes":
-            await update.message.reply_text("Funcionalidad de lista de pacientes pendiente.")
+            await list_patients(update, context)
             return
         if text == "📊 Informes de paciente":
             await update.message.reply_text("Funcionalidad de informes pendiente.")
@@ -464,5 +536,7 @@ if __name__ == "__main__":
         .token(os.getenv("TELEGRAM_TOKEN", "7796011838:AAGFuQRg2OdEhYT-Cqvg_mGRIOeKWkYNSic"))\
         .build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(patient_details, pattern=r"^patient:\d+$"))
+    app.add_handler(CallbackQueryHandler(list_patients_callback, pattern=r"^list_patients$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling()
