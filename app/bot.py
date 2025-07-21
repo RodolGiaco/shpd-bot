@@ -82,7 +82,7 @@ MAIN_MENU = {
     "2": "Ver métricas",
     "3": "Ajustar alertas",
     "4": "Mis datos",
-    "5": "Calibrar dispositivo",
+    "5": "Logros y badges",
     "6": "Ayuda",
     "7": "Volver al menú",
 }
@@ -90,7 +90,7 @@ MAIN_MENU = {
 MENU_BUTTONS = [
     ["1. ⚙️ Configurar sesión", "2. 📊 Ver métricas"],
     ["3. 🔔 Ajustar alertas", "4. 👤 Mis datos"],
-    ["5. 🎯 Calibrar dispositivo", "6. ❓ Ayuda"],
+    ["5. 🏆 Logros y badges", "6. ❓ Ayuda"],
     ["7. 🔄 Volver al menú"],
 ]
 
@@ -120,9 +120,10 @@ FIELDS = ["nombre", "edad", "sexo", "diagnostico", "device_id"]
 ROLE_BUTTONS = [["Paciente", "Especialista"]]
 
 PATIENT_MENU_BUTTONS = [
-    ["📝 Mi historial de posturas", "🎯 Mis objetivos ergonómicos"],
-    ["📅 Programa de recordatorios", "❓ Ayuda y soporte"],
-    ["🏆 Logros y badges"],
+    ["1. ⚙️ Configurar sesión", "2. 📊 Ver métricas"],
+    ["3. 🔔 Ajustar alertas", "4. 👤 Mis datos"],
+    ["5. 🏆 Logros y badges", "6. ❓ Ayuda"],
+    ["7. 🔄 Volver al menú"],
 ]
 
 SPECIALIST_MENU_BUTTONS = [
@@ -209,19 +210,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Opciones del menú de Paciente ---
     if role == "paciente":
-        if text == "📝 Mi historial de posturas":
-            await update.message.reply_text("Funcionalidad de historial pendiente.")
-            return
-        if text == "🎯 Mis objetivos ergonómicos":
-            await update.message.reply_text("Funcionalidad de objetivos pendiente.")
-            return
-        if text == "📅 Programa de recordatorios":
-            await update.message.reply_text("Funcionalidad de recordatorios pendiente.")
-            return
-        if text == "❓ Ayuda y soporte":
-            await update.message.reply_text("Funcionalidad de ayuda pendiente.")
-            return
-        if text == "🏆 Logros y badges":
+        if text.startswith("5") or "Logros" in text:
             await update.message.reply_text("Funcionalidad de logros pendiente.")
             return
 
