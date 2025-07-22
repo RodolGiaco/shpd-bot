@@ -49,6 +49,13 @@ class Paciente(Base):
     sexo = Column(String)
     diagnostico = Column(String)
 
+class Especialista(Base):
+    __tablename__ = "especialistas"
+    id = Column(Integer, primary_key=True, index=True)
+    telegram_id = Column(String, unique=True, index=True, nullable=False)
+    nombre = Column(String, nullable=False)
+    edad = Column(Integer)
+
 class Sesion(Base):
     __tablename__ = "sesiones"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -250,7 +257,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await show_main_menu(update, context)
         elif text.lower() == "especialista":
             context.user_data["rol"] = "especialista"
-            return await show_main_menu(update, context)
+            db: Session = SessionLocal()
+            try:
+                telegram_id = str(update.effective_user.id)
+                especialista = db.query(Especialista).filter(Especialista.telegram_id == telegram_id).first()
+            finally:
+                db.close()
+            if especialista:
+                return await show_main_menu(update, context)
+            context.user_data["state"] = "awaiting_specialist_name"
+            return await update.message.reply_text(
+                "Por favor, ingresa tu nombre completo:",
+                reply_markup=ReplyKeyboardRemove()
+            )
         else:
             return await update.message.reply_text(
                 "Por favor selecciona 'Paciente' o 'Especialista'.",
@@ -258,6 +277,46 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     role = context.user_data.get("rol")
+
+    # --- Flujo de registro de especialista ---
+    if state == "awaiting_specialist_name":
+        context.user_data["specialist_name"] = text
+        context.user_data["state"] = "awaiting_specialist_age"
+        return await update.message.reply_text("Ingresa tu edad:")
+
+    if state == "awaiting_specialist_age":
+        try:
+            edad = int(text)
+            if edad < 1 or edad > 120:
+                raise ValueError
+        except Exception:
+            return await update.message.reply_text(
+                "❌ Edad inválida. Ingresa un número entre 1 y 120:"
+            )
+        nombre = context.user_data.pop("specialist_name")
+        telegram_id = str(update.effective_user.id)
+        db: Session = SessionLocal()
+        try:
+            especialista = db.query(Especialista).filter(Especialista.telegram_id == telegram_id).first()
+            if especialista:
+                especialista.nombre = nombre
+                especialista.edad = edad
+            else:
+                especialista = Especialista(
+                    telegram_id=telegram_id,
+                    nombre=nombre,
+                    edad=edad
+                )
+                db.add(especialista)
+            db.commit()
+        except Exception as e:
+            logging.error(e)
+            await update.message.reply_text("❌ Error al guardar. Intenta de nuevo.")
+        finally:
+            db.close()
+        context.user_data["state"] = None
+        await update.message.reply_text("✅ Registro de especialista completado.")
+        return await show_main_menu(update, context)
 
     # --- Opciones del menú de Especialista ---
     if role == "especialista":
