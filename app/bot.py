@@ -55,6 +55,9 @@ class Especialista(Base):
     telegram_id = Column(String, unique=True, index=True, nullable=False)
     nombre = Column(String, nullable=False)
     edad = Column(Integer)
+    __table_args__ = (
+        {'sqlite_autoincrement': True},
+    )
 
 class Sesion(Base):
     __tablename__ = "sesiones"
@@ -77,7 +80,7 @@ Base.metadata.create_all(bind=engine)
 
 # Conectarse a Redis
 try:
-    r = redis.Redis(host='redis', port=6379, decode_responses=True) # Apuntar al servicio de Redis
+    r = redis.Redis(host='redis', port=6379, decode_responses=True)
     r.ping()
     logging.info("Conexión a Redis exitosa desde el Bot.")
 except redis.exceptions.ConnectionError as e:
@@ -102,7 +105,6 @@ MENU_BUTTONS = [
     ["7. 🔄 Volver al menú"],
 ]
 
-# Configuración de sesión
 SESSION_MENU = {
     "1": "10 minutos",
     "2": "30 minutos",
@@ -115,16 +117,13 @@ SESSION_BUTTONS = [
     ["3. 1 hora", "4. Personalizado"],
 ]
 
-# Opciones de sexo para el registro de pacientes
 GENDER_BUTTONS = [
     ["Masculino", "Femenino"],
     ["Otro"]
 ]
 
-# Estados de registro de paciente
 FIELDS = ["nombre", "edad", "sexo", "diagnostico", "device_id"]
 
-# --- Selectores de rol y menús personalizados ---
 ROLE_BUTTONS = [["Paciente", "Especialista"]]
 
 PATIENT_MENU_BUTTONS = [
@@ -140,6 +139,16 @@ SPECIALIST_MENU_BUTTONS = [
     ["🗂️ Exportar datos", "💬 Chat con especialista"],
 ]
 
+# --- Alertas: opciones y teclados ---
+ALERT_OPTIONS = [5, 10, 20, 30]
+ALERT_KB = InlineKeyboardMarkup([
+    [InlineKeyboardButton("5 s",  callback_data="alert:5"),
+     InlineKeyboardButton("10 s", callback_data="alert:10")],
+    [InlineKeyboardButton("20 s", callback_data="alert:20"),
+     InlineKeyboardButton("30 s", callback_data="alert:30")],
+    [InlineKeyboardButton("⏱ Personalizado", callback_data="alert:custom")]
+])
+
 # --- Utilidades de pacientes ---
 def _format_patient(full_name: str) -> str:
     parts = full_name.split()
@@ -149,9 +158,7 @@ def _format_patient(full_name: str) -> str:
         return f"{last} {first}"
     return full_name
 
-
 async def list_patients(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Muestra la lista de pacientes como botones."""
     db: Session = SessionLocal()
     try:
         pacientes = db.query(Paciente).order_by(Paciente.nombre).all()
@@ -172,9 +179,7 @@ async def list_patients(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-
 async def patient_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Muestra los detalles de un paciente seleccionado."""
     query = update.callback_query
     await query.answer()
     patient_id = int(query.data.split(":")[1])
@@ -204,21 +209,17 @@ async def patient_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
     )
 
-
 async def list_patients_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback para volver a listar pacientes."""
     query = update.callback_query
     await query.answer()
     await list_patients(update, context)
 
-# Utilidad para extraer la opción seleccionada
 def extract_choice(text: str) -> str:
     if "." in text:
         return text.split(".")[0].strip()
     return text.strip()
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Muestra el menú principal según el rol guardado."""
     context.user_data.pop("state", None)
     role = context.user_data.get("rol")
 
@@ -235,9 +236,51 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
+# --- ALERTAS: funciones ---
+async def alert_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Selecciona el tiempo de mala postura para disparar la alerta:",
+        reply_markup=ALERT_KB
+    )
+
+async def alert_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split(":")[1]
+
+    if data == "custom":
+        context.user_data["state"] = "awaiting_alert_custom_value"
+        return await query.edit_message_text("Ingresa el tiempo en segundos (ej: 12):")
+
+    seconds = int(data)
+    await _save_alert_threshold(update, context, seconds)
+    await query.edit_message_text(f"✅ Umbral de alerta establecido en {seconds} s.")
+    # volvemos al menú principal (mensaje nuevo)
+    if query.message:
+        fake_update = Update(update.update_id, message=query.message)  # pequeño hack para reutilizar show_main_menu
+        return await show_main_menu(fake_update, context)
+
+async def _save_alert_threshold(update: Update, context: ContextTypes.DEFAULT_TYPE, seconds: int):
+    if not r:
+        return
+    telegram_id = str(update.effective_user.id)
+    db: Session = SessionLocal()
+    device_id = None
+    try:
+        paciente = db.query(Paciente).filter(Paciente.telegram_id == telegram_id).first()
+        if paciente:
+            device_id = paciente.device_id
+    finally:
+        db.close()
+
+    if not device_id:
+        return
+    r.set(f"alert_threshold:{device_id}", seconds)
+
+        
+
+# --- Handlers principales ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Solicita el rol del usuario al iniciar la conversación."""
-    # Limpiar rol previo y teclado
     context.user_data.pop("rol", None)
     context.user_data.pop("state", None)
     await update.message.reply_text(
@@ -250,7 +293,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     choice = text.split('.')[0] if "." in text else text
     state = context.user_data.get("state")
 
-    # --- Selección de rol inicial ---
+    # Selección de rol
     if context.user_data.get("rol") is None:
         if text.lower() == "paciente":
             context.user_data["rol"] = "paciente"
@@ -278,7 +321,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     role = context.user_data.get("rol")
 
-    # --- Flujo de registro de especialista ---
+    # Registro especialista
     if state == "awaiting_specialist_name":
         context.user_data["specialist_name"] = text
         context.user_data["state"] = "awaiting_specialist_age"
@@ -290,9 +333,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if edad < 1 or edad > 120:
                 raise ValueError
         except Exception:
-            return await update.message.reply_text(
-                "❌ Edad inválida. Ingresa un número entre 1 y 120:"
-            )
+            return await update.message.reply_text("❌ Edad inválida. Ingresa un número entre 1 y 120:")
         nombre = context.user_data.pop("specialist_name")
         telegram_id = str(update.effective_user.id)
         db: Session = SessionLocal()
@@ -318,7 +359,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Registro de especialista completado.")
         return await show_main_menu(update, context)
 
-    # --- Opciones del menú de Especialista ---
+    # Menú Especialista
     if role == "especialista":
         if text == "📋 Ver lista de pacientes":
             await list_patients(update, context)
@@ -339,13 +380,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Funcionalidad de chat pendiente.")
             return
 
-    # --- Opciones del menú de Paciente ---
-    if role == "paciente":
-        if text.startswith("5") or "Logros" in text:
-            await update.message.reply_text("Funcionalidad de logros pendiente.")
-            return
+    # Menú Paciente - Ajustar alertas
+    if role == "paciente" and choice == "3" and state is None:
+        return await alert_menu(update, context)
 
-    # Manejo de 'Mis datos' (opción 4)
+    # Valor personalizado de alerta
+    if state == "awaiting_alert_custom_value":
+        try:
+            seconds = int(text)
+            if seconds < 1 or seconds > 3600:
+                raise ValueError
+        except ValueError:
+            return await update.message.reply_text("❌ Número inválido. Ingresa un entero entre 1 y 3600:")
+        context.user_data.pop("state", None)
+        await _save_alert_threshold(update, context, seconds)
+        await update.message.reply_text(f"✅ Umbral de alerta establecido en {seconds} s.")
+        return await show_main_menu(update, context)
+
+    # Mis datos (4)
     if choice == "4":
         telegram_id = str(update.effective_user.id)
         db: Session = SessionLocal()
@@ -358,7 +410,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Por favor, ingresa tu nombre completo:",
                     reply_markup=ReplyKeyboardRemove()
                 )
-            # Si ya existe, mostrar y dar opción de modificar
             context.user_data['paciente_id'] = paciente.id
             context.user_data['modificar_paciente'] = True
             return await update.message.reply_text(
@@ -375,9 +426,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         finally:
             db.close()
-        return
 
-    # Si el usuario responde a la pregunta de modificar datos
     if state is None and context.user_data.get('modificar_paciente'):
         if text.lower() == "no":
             context.user_data.pop('modificar_paciente', None)
@@ -398,7 +447,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             )
 
-    # Flujo de registro de paciente
+    # Registro/edición paciente
     if state == 'awaiting_patient_data':
         idx = context.user_data['field_index']
         field = FIELDS[idx]
@@ -410,17 +459,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     raise ValueError
                 context.user_data['edad'] = v
             except Exception:
-                return await update.message.reply_text(
-                    "❌ Edad inválida. Ingresa un número entre 1 y 120:"
-                )
+                return await update.message.reply_text("❌ Edad inválida. Ingresa un número entre 1 y 120:")
         elif field == 'sexo':
             mapa = {
                 'masculino': 'Masculino',
                 'femenino': 'Femenino',
                 'otro': 'Otro',
-                'm': 'M',
-                'f': 'F',
-                'o': 'O'
+                'm': 'M', 'f': 'F', 'o': 'O'
             }
             val_normalizado = mapa.get(val.lower())
             if not val_normalizado:
@@ -433,6 +478,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['sexo'] = val_normalizado
         else:
             context.user_data[field] = val
+
         idx += 1
         if idx < len(FIELDS):
             context.user_data['field_index'] = idx
@@ -449,22 +495,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 )
             return await update.message.reply_text(prompts[field])
-        # Todos los datos ingresados, guardar en BD
+        # Guardar
         db: Session = SessionLocal()
         try:
             telegram_id = str(update.effective_user.id)
-            # 1) Buscamos si ya existe
             paciente = db.query(Paciente).filter(Paciente.telegram_id == telegram_id).first()
             if paciente:
-                # 2a) Si existe, actualizamos campos
-                paciente.device_id = context.user_data['device_id']
-                paciente.nombre    = context.user_data['nombre']
-                paciente.edad      = context.user_data['edad']
-                paciente.sexo      = context.user_data['sexo']
+                paciente.device_id   = context.user_data['device_id']
+                paciente.nombre      = context.user_data['nombre']
+                paciente.edad        = context.user_data['edad']
+                paciente.sexo        = context.user_data['sexo']
                 paciente.diagnostico = context.user_data['diagnostico']
                 mensaje = "✅ Datos actualizados con éxito."
             else:
-                # 2b) Si no existe, creamos uno nuevo
                 paciente = Paciente(
                     telegram_id=telegram_id,
                     device_id=context.user_data['device_id'],
@@ -475,12 +518,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 db.add(paciente)
                 mensaje = "✅ Registro completado con éxito."
-
-            # 3) Commit y refresco
             db.commit()
             db.refresh(paciente)
             context.user_data['paciente_id'] = paciente.id
-
             await update.message.reply_text(mensaje)
         except Exception as e:
             logging.error(e)
@@ -490,7 +530,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_main_menu(update, context)
         return
 
-    # --- FLUJO: Configuración de Sesión ---
+    # Configuración de sesión
     if choice == "1" and state is None:
         db: Session = SessionLocal()
         paciente = db.query(Paciente).filter(Paciente.telegram_id == str(update.effective_user.id)).first()
@@ -511,16 +551,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if choice_num not in SESSION_MENU:
             return await update.message.reply_text("❌ Opción no válida. Por favor, elige una del menú.")
 
-        # Mapeo de opciones a segundos
         duration_map = {"1": 600, "2": 1800, "3": 3600}
-        
         if choice_num == "4":
             return await update.message.reply_text("La duración personalizada aún no está implementada.")
-        
+
         intervalo_segundos = duration_map[choice_num]
         db: Session = SessionLocal()
         try:
-            # Obtener el device_id del paciente
             telegram_id = str(update.effective_user.id)
             paciente = db.query(Paciente).filter(Paciente.telegram_id == telegram_id).first()
             if not paciente:
@@ -530,17 +567,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             device_id = paciente.device_id
 
-            # Crear una nueva sesión con UUID autogenerado
             sesion = Sesion(intervalo_segundos=intervalo_segundos, modo="monitor_activo")
             db.add(sesion)
             db.commit()
             db.refresh(sesion)
             session_id = str(sesion.id)
 
-            # --- Lógica de Redis ---
             if r:
                 redis_key = f"shpd-session:{session_id}"
-        
                 session_data = {
                     "start_ts": int(time.time()),
                     "intervalo_segundos": sesion.intervalo_segundos,
@@ -551,13 +585,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 redis_shpd_key = f"shpd-data:{device_id}"
                 shpd_data = {
                     "session_id": session_id,
+                    "telegram_id": telegram_id
                 }
                 r.hset(redis_shpd_key, mapping=shpd_data)
                 logging.info(f"Shpd-data {device_id} guardada en Redis.")
             else:
                 logging.error("No se pudo guardar la sesión en Redis.")
 
-            # Devuelve la URL con el session_id y el device_id al usuario en un mensaje aparte, interactivo
             url = f"http://172.18.0.2:30080/?session_id={session_id}&device_id={device_id}"
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🎥 Ver monitoreo en vivo", url=url)]
@@ -580,13 +614,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_main_menu(update, context)
         return
 
-    # Resto de opciones: 2,3,5,6,7 … (mantener lógica existente)
-    if choice in MAIN_MENU and choice not in ("1", "4"):
-        # ...) Aquí iría la lógica para las demás opciones, idéntica al código previo
+    # Resto de opciones no implementadas
+    if choice in MAIN_MENU and choice not in ("1", "4", "3"):
         await update.message.reply_text("Esta opción aún no está implementada.")
         return await show_main_menu(update, context)
 
-    # Si no coincide con ningún flujo activo, mostrar menú
     if not state:
         await show_main_menu(update, context)
 
@@ -594,8 +626,11 @@ if __name__ == "__main__":
     app = ApplicationBuilder()\
         .token(os.getenv("TELEGRAM_TOKEN", "7796011838:AAGFuQRg2OdEhYT-Cqvg_mGRIOeKWkYNSic"))\
         .build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(patient_details, pattern=r"^patient:\d+$"))
     app.add_handler(CallbackQueryHandler(list_patients_callback, pattern=r"^list_patients$"))
+    app.add_handler(CallbackQueryHandler(alert_callback, pattern=r"^alert:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
     app.run_polling()
